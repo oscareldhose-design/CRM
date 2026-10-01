@@ -186,7 +186,7 @@ function wireRequest(root) {
       const dom = v.slice(at + 1).toLowerCase();
       if (dom === domain) { v = v.slice(0, at); form.email.value = v; }
     }
-    if (!userTouched) form.username.value = v.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 32);
+    if (!userTouched) form.username.value = v.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 32);
   });
   const fieldErr = (name, msg) => {
     const el = form.querySelector(`[name="${name}"]`);
