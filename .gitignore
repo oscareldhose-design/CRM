@@ -1,0 +1,7 @@
+# Live data never goes into git: the database, recovery code and backups stay on the server.
+crm/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+node_modules/
+.DS_Store
