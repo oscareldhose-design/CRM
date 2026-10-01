@@ -62,22 +62,10 @@ function capsWatch(root) {
 
 /* ---------- Sign-in page ---------- */
 function authLayout(cardContent) {
-  const offices = (S.status && S.status.offices) || [];
   return h`<div class="auth">
-    <section class="auth-hero" aria-label="MAP Operating System">
-      <div class="auth-logo"><span class="logo-plate"><img src="assets/map-logo.svg" alt="MAP: Your way home" width="60" height="64"></span>
-        <div><div class="tag">MAP Operating System</div><div style="font-weight:700;font-size:15px;margin-top:2px">The Mortgage Advice Professionals</div></div></div>
-      <h1>Every lead, client and case in one place.</h1>
-      <p class="lead">Track every enquiry from first call to completion. The CRM reminds you what to do next, flags anything at risk and finds future business, so nothing slips through the cracks.</p>
-      <ul class="auth-points">
-        <li>${icon('lock')}<span>Your own secure login. Every change is recorded against your name.</span></li>
-        <li>${icon('bell')}<span>Automatic reminders, risk flags and remortgage alerts.</span></li>
-        <li>${icon('building')}<span>Each office sees only its own clients.</span></li>
-      </ul>
-      ${offices.length ? h`<div class="auth-offices">${offices.map((o) => h`<span>${o.name}</span>`)}</div>` : ''}
-      <p class="auth-legal">For authorised MAP staff only. Sign-ins and changes are logged. Advice and suitability always stay with the adviser.</p>
-    </section>
-    <section class="auth-side"><div class="auth-card" id="authCard">${cardContent}</div></section>
+    <section class="auth-side"><div class="auth-card" id="authCard">
+      <div class="auth-brand"><img src="assets/map-logo.svg" alt="MAP: Your way home" width="64" height="68"></div>
+      ${cardContent}</div></section>
   </div>
   <button class="theme-fab" type="button" data-toggle-theme aria-label="Switch light or dark mode"><span data-theme-icon>${icon(getTheme() === 'dark' ? 'sun' : 'moon')}</span></button>`;
 }
