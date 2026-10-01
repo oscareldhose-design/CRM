@@ -689,7 +689,7 @@ function crm_case_prepare(array $row, $before)
 function crm_case_after_save($before, array $after)
 {
     $officeId = (int) $after['office_id'];
-    $client = crm_one('SELECT * FROM clients WHERE id = ?', [$after['client_id']]);
+    $client = crm_one('SELECT * FROM clients WHERE id = ? AND office_id = ?', [$after['client_id'], $officeId]);
     $who = $client ? crm_client_name($client) : 'client';
     $u = isset($GLOBALS['crm_user']) ? $GLOBALS['crm_user'] : null;
     $prev = $before ? $before['stage'] : null;

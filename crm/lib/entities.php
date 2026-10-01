@@ -182,10 +182,10 @@ function crm_record_name($entity, array $r)
         case 'clients':
             return trim($r['first_name'] . ' ' . $r['last_name']);
         case 'cases':
-            $c = crm_one('SELECT first_name, last_name FROM clients WHERE id = ?', [$r['client_id']]);
+            $c = crm_one('SELECT first_name, last_name FROM clients WHERE id = ? AND office_id = ?', [$r['client_id'], $r['office_id']]);
             return crm_label('case_type', $r['case_type']) . ($c ? ': ' . trim($c['first_name'] . ' ' . $c['last_name']) : '');
         case 'policies':
-            $c = crm_one('SELECT first_name, last_name FROM clients WHERE id = ?', [$r['client_id']]);
+            $c = crm_one('SELECT first_name, last_name FROM clients WHERE id = ? AND office_id = ?', [$r['client_id'], $r['office_id']]);
             return crm_label('policy_type', $r['policy_type']) . ($c ? ': ' . trim($c['first_name'] . ' ' . $c['last_name']) : '');
         case 'tasks':
             return $r['title'];
@@ -463,7 +463,7 @@ function crm_action_list()
 
     switch ($entity) {
         case 'leads':
-            $sql = 'SELECT l.*, i.name AS introducer_name FROM leads l LEFT JOIN introducers i ON i.id = l.introducer_id WHERE l.office_id = ? AND l.deleted_at IS NULL';
+            $sql = 'SELECT l.*, i.name AS introducer_name FROM leads l LEFT JOIN introducers i ON i.id = l.introducer_id AND i.office_id = l.office_id WHERE l.office_id = ? AND l.deleted_at IS NULL';
             $p[] = $officeId;
             if ($status === '' || $status === 'open') {
                 $where[] = "l.status IN ('new','contacted','qualified')";
@@ -504,7 +504,7 @@ function crm_action_list()
             break;
         case 'cases':
             $sql = "SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k
-                JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL";
+                JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL";
             $p[] = $officeId;
             if ($status === '' || $status === 'active') {
                 $where[] = "k.status = 'active'";
@@ -528,7 +528,7 @@ function crm_action_list()
             break;
         case 'policies':
             $sql = "SELECT p.*, c.first_name || ' ' || c.last_name AS client_name FROM policies p
-                JOIN clients c ON c.id = p.client_id AND c.deleted_at IS NULL WHERE p.office_id = ? AND p.deleted_at IS NULL";
+                JOIN clients c ON c.id = p.client_id AND c.office_id = p.office_id AND c.deleted_at IS NULL WHERE p.office_id = ? AND p.deleted_at IS NULL";
             $p[] = $officeId;
             if ($status === 'renewals') {
                 $where[] = "p.status = 'on_risk' AND p.renewal_date IS NOT NULL AND p.renewal_date <= ?";
@@ -559,7 +559,7 @@ function crm_action_list()
             break;
         case 'tasks':
             $sql = "SELECT t.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name
-                FROM tasks t LEFT JOIN clients c ON c.id = t.client_id LEFT JOIN leads l ON l.id = t.lead_id
+                FROM tasks t LEFT JOIN clients c ON c.id = t.client_id AND c.office_id = t.office_id LEFT JOIN leads l ON l.id = t.lead_id AND l.office_id = t.office_id
                 WHERE t.office_id = ? AND t.deleted_at IS NULL";
             $p[] = $officeId;
             if ($status === '' || $status === 'open') {
@@ -600,7 +600,7 @@ function crm_action_list()
             break;
         case 'documents':
             $sql = "SELECT d.*, c.first_name || ' ' || c.last_name AS client_name FROM documents d
-                LEFT JOIN clients c ON c.id = d.client_id WHERE d.office_id = ? AND d.deleted_at IS NULL";
+                LEFT JOIN clients c ON c.id = d.client_id AND c.office_id = d.office_id WHERE d.office_id = ? AND d.deleted_at IS NULL";
             $p[] = $officeId;
             if ($status !== '' && $status !== 'all') {
                 $where[] = 'd.status = ?';
@@ -694,14 +694,14 @@ function crm_action_get()
             $out['lead'] = $r['lead_id'] ? crm_one('SELECT id, source, enquiry_type, created_at, score, rating FROM leads WHERE id = ?', [$r['lead_id']]) : null;
             break;
         case 'cases':
-            $out['client'] = crm_one('SELECT * FROM clients WHERE id = ?', [$r['client_id']]);
+            $out['client'] = crm_one('SELECT * FROM clients WHERE id = ? AND office_id = ?', [$r['client_id'], $officeId]);
             $out['documents'] = crm_all('SELECT * FROM documents WHERE case_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY name', [$id, $officeId]);
             $out['tasks'] = crm_tasks_where('case_id', $id);
             $out['activities'] = crm_activities_where('case_id', $id);
             $out['policies'] = crm_all('SELECT * FROM policies WHERE client_id = ? AND office_id = ? AND deleted_at IS NULL', [$r['client_id'], $officeId]);
             break;
         case 'policies':
-            $out['client'] = crm_one('SELECT id, first_name, last_name FROM clients WHERE id = ?', [$r['client_id']]);
+            $out['client'] = crm_one('SELECT id, first_name, last_name FROM clients WHERE id = ? AND office_id = ?', [$r['client_id'], $officeId]);
             $out['activities'] = crm_activities_where('policy_id', $id);
             $out['tasks'] = crm_tasks_where('policy_id', $id);
             break;
@@ -764,9 +764,24 @@ function crm_action_restore()
         if (!$r['deleted_at']) {
             return;
         }
-        if (in_array($entity, ['cases', 'policies', 'documents'], true) && $r['client_id']
-            && crm_val('SELECT deleted_at FROM clients WHERE id = ?', [$r['client_id']])) {
-            crm_fail(409, 'parent_deleted', 'Restore the client first: this record belongs to a client that is in the trash.');
+        // What each kind of record belongs to: it can only come back while that still exists here.
+        $parentsOf = [
+            'cases' => ['client_id' => 'client'], 'policies' => ['client_id' => 'client', 'case_id' => 'case'],
+            'documents' => ['client_id' => 'client', 'case_id' => 'case'],
+            'tasks' => ['client_id' => 'client', 'case_id' => 'case', 'lead_id' => 'lead', 'policy_id' => 'policy'],
+        ];
+        $tables = ['client' => 'clients', 'case' => 'cases', 'lead' => 'leads', 'policy' => 'policies'];
+        foreach (isset($parentsOf[$entity]) ? $parentsOf[$entity] : [] as $col => $word) {
+            if (empty($r[$col])) {
+                continue;
+            }
+            $p = crm_one('SELECT id, deleted_at FROM ' . $tables[$word] . ' WHERE id = ? AND office_id = ?', [$r[$col], crm_office_id()]);
+            if (!$p) {
+                crm_fail(409, 'parent_gone', 'This can\'t be restored: the ' . $word . ' it belonged to has been permanently deleted.');
+            }
+            if ($p['deleted_at']) {
+                crm_fail(409, 'parent_deleted', 'Restore the ' . $word . ' it belongs to first: it is in the trash.');
+            }
         }
         crm_q('UPDATE ' . $entity . ' SET deleted_at = NULL, deleted_by = NULL, version = version + 1, updated_at = ? WHERE id = ?', [crm_now(), $id]);
         foreach (crm_children($entity, $id) as $ch) {
@@ -789,28 +804,40 @@ function crm_action_purge()
             crm_fail(409, 'not_in_trash', 'Move it to the trash first.');
         }
         $name = crm_record_name($entity, $r);
-        crm_purge_rows($entity, $id, $r['deleted_at']);
+        crm_purge_rows($entity, $id);
         crm_audit('purge', $entity, $id, 'Permanently deleted ' . strtolower(crm_entity($entity)['label']) . ' ' . $name);
     });
     crm_ok();
 }
 
-function crm_purge_rows($entity, $id, $deletedAt)
+function crm_purge_rows($entity, $id)
 {
     $office = crm_office_id();
     foreach (crm_children($entity, $id) as $ch) {
-        foreach (crm_all('SELECT id FROM ' . $ch[0] . ' WHERE ' . $ch[1] . ' = ? AND office_id = ? AND deleted_at = ?', [$id, $office, $deletedAt]) as $child) {
-            crm_purge_rows($ch[0], (int) $child['id'], $deletedAt);
+        foreach (crm_all('SELECT id FROM ' . $ch[0] . ' WHERE ' . $ch[1] . ' = ? AND office_id = ?', [$id, $office]) as $child) {
+            crm_purge_rows($ch[0], (int) $child['id']);
         }
     }
     $col = ['clients' => 'client_id', 'cases' => 'case_id', 'leads' => 'lead_id', 'policies' => 'policy_id'];
     if (isset($col[$entity])) {
         crm_q('DELETE FROM activities WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
+        crm_q('DELETE FROM tasks WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
         if (in_array($entity, ['clients', 'cases'], true)) {
             crm_q('DELETE FROM opportunities WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
+            crm_q('DELETE FROM documents WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
+        }
+        if ($entity === 'clients') {
+            crm_q('UPDATE leads SET client_id = NULL WHERE client_id = ? AND office_id = ?', [$id, $office]);
+        }
+        if ($entity === 'cases') {
+            crm_q('UPDATE policies SET case_id = NULL WHERE case_id = ? AND office_id = ?', [$id, $office]);
         }
     }
-    crm_q('DELETE FROM ' . $entity . ' WHERE id = ?', [$id]);
+    if ($entity === 'templates') {
+        crm_q('DELETE FROM templates WHERE id = ? AND (office_id = ? OR office_id IS NULL)', [$id, $office]);
+        return;
+    }
+    crm_q('DELETE FROM ' . $entity . ' WHERE id = ? AND office_id = ?', [$id, $office]);
 }
 
 /* ---- Lead conversion, reopening lost work ------------------------------------------------------ */

@@ -81,7 +81,7 @@ function crm_action_admin_user_save()
     if ($email === '' && !$isOfficeAccount) {
         crm_fail(400, 'invalid', 'Enter their MAP email address.', 'email');
     }
-    if ($email !== '' && (!crm_valid_email($email) || substr($email, -strlen($domain)) !== $domain)) {
+    if ($email !== '' && !crm_is_map_email($email)) {
         crm_fail(400, 'invalid', 'Logins can only be created for MAP email addresses ending ' . $domain . '.', 'email');
     }
     if (!preg_match('/^[a-z0-9][a-z0-9._-]{2,31}$/', $username)) {
@@ -218,6 +218,10 @@ function crm_action_admin_office_save()
             crm_fail(409, 'last_office', 'At least one office must stay open.');
         }
         crm_q('UPDATE offices SET name = ?, address = ?, phone = ?, active = ? WHERE id = ?', [$name, $address ?: null, $phone ?: null, $active, $id]);
+        if (!$active) {
+            // Staff of a closed office are signed out; they can't work until Newcastle moves their login.
+            crm_q("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE office_id = ? AND role <> 'admin')", [$id]);
+        }
         crm_audit('office_update', 'offices', $id, 'Updated office ' . $name, null, $id);
     } else {
         $id = crm_insert('offices', ['name' => $name, 'address' => $address ?: null, 'phone' => $phone ?: null, 'active' => $active, 'created_at' => crm_now()]);
@@ -274,6 +278,9 @@ function crm_action_admin_database()
     $tmp = CRM_DATA_DIR . '/export-' . bin2hex(random_bytes(8)) . '.sqlite';
     try {
         crm_db()->exec('VACUUM INTO ' . crm_db()->quote($tmp));
+        $copy = new PDO('sqlite:' . $tmp, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $copy->exec("DELETE FROM sessions; DELETE FROM login_failures; DELETE FROM settings WHERE key = 'recovery_pending'; VACUUM;");
+        $copy = null;
         $content = file_get_contents($tmp);
     } finally {
         if (is_file($tmp)) {

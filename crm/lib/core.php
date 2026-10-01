@@ -311,6 +311,13 @@ function crm_valid_email($s)
     return is_string($s) && strlen($s) <= 254 && filter_var($s, FILTER_VALIDATE_EMAIL) !== false;
 }
 
+/** A plain address at the MAP domain: letters, numbers and . _ % + - ' before the @, nothing quoted. */
+function crm_is_map_email($email)
+{
+    return is_string($email) && crm_valid_email($email)
+        && preg_match('/^[a-z0-9][a-z0-9._%+\'-]{0,63}@' . preg_quote(strtolower(CRM_ALLOWED_DOMAIN), '/') . '$/D', $email) === 1;
+}
+
 function crm_norm_email($s)
 {
     return strtolower(trim((string) $s));
@@ -556,7 +563,7 @@ function crm_schema(PDO $pdo)
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 
 CREATE TABLE IF NOT EXISTS offices (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE COLLATE NOCASE,
   address TEXT,
   phone TEXT,
@@ -565,7 +572,7 @@ CREATE TABLE IF NOT EXISTS offices (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   email TEXT UNIQUE COLLATE NOCASE,
   full_name TEXT NOT NULL,
@@ -602,7 +609,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
 CREATE TABLE IF NOT EXISTS login_failures (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   ip TEXT NOT NULL,
   kind TEXT NOT NULL,
   at INTEGER NOT NULL
@@ -610,7 +617,7 @@ CREATE TABLE IF NOT EXISTS login_failures (
 CREATE INDEX IF NOT EXISTS idx_login_failures ON login_failures(ip, kind, at);
 
 CREATE TABLE IF NOT EXISTS introducers (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL REFERENCES offices(id),
   name TEXT NOT NULL,
   company TEXT,
@@ -624,7 +631,7 @@ CREATE TABLE IF NOT EXISTS introducers (
 );
 
 CREATE TABLE IF NOT EXISTS leads (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL REFERENCES offices(id),
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
@@ -654,7 +661,7 @@ CREATE TABLE IF NOT EXISTS leads (
 CREATE INDEX IF NOT EXISTS idx_leads_office ON leads(office_id, status);
 
 CREATE TABLE IF NOT EXISTS clients (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL REFERENCES offices(id),
   title TEXT,
   first_name TEXT NOT NULL,
@@ -687,7 +694,7 @@ CREATE INDEX IF NOT EXISTS idx_clients_office ON clients(office_id);
 CREATE INDEX IF NOT EXISTS idx_clients_surname ON clients(last_name COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS cases (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL REFERENCES offices(id),
   client_id INTEGER NOT NULL,
   case_type TEXT NOT NULL DEFAULT 'purchase',
@@ -727,7 +734,7 @@ CREATE INDEX IF NOT EXISTS idx_cases_office ON cases(office_id, status);
 CREATE INDEX IF NOT EXISTS idx_cases_client ON cases(client_id);
 
 CREATE TABLE IF NOT EXISTS policies (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL REFERENCES offices(id),
   client_id INTEGER NOT NULL,
   case_id INTEGER,
@@ -750,7 +757,7 @@ CREATE INDEX IF NOT EXISTS idx_policies_office ON policies(office_id, status);
 CREATE INDEX IF NOT EXISTS idx_policies_client ON policies(client_id);
 
 CREATE TABLE IF NOT EXISTS activities (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL,
   client_id INTEGER,
   lead_id INTEGER,
@@ -771,7 +778,7 @@ CREATE INDEX IF NOT EXISTS idx_activities_case ON activities(case_id);
 CREATE INDEX IF NOT EXISTS idx_activities_office ON activities(office_id, created_at);
 
 CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL,
   title TEXT NOT NULL,
   notes TEXT,
@@ -792,7 +799,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_office ON tasks(office_id, status, due_date
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_autokey ON tasks(office_id, auto_key) WHERE auto_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS documents (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL,
   case_id INTEGER,
   client_id INTEGER,
@@ -807,7 +814,7 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_case ON documents(case_id);
 
 CREATE TABLE IF NOT EXISTS templates (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER,
   name TEXT NOT NULL,
   category TEXT,
@@ -817,7 +824,7 @@ CREATE TABLE IF NOT EXISTS templates (
 );
 
 CREATE TABLE IF NOT EXISTS opportunities (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   office_id INTEGER NOT NULL,
   client_id INTEGER,
   case_id INTEGER,
@@ -836,7 +843,7 @@ CREATE TABLE IF NOT EXISTS opportunities (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_opps_autokey ON opportunities(office_id, auto_key) WHERE auto_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS audit_log (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
   user_id INTEGER,
   user_name TEXT,
@@ -852,7 +859,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_office ON audit_log(office_id, id);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity, entity_id);
 
 CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   event_date TEXT,
   location TEXT,
@@ -863,7 +870,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE TABLE IF NOT EXISTS event_contacts (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id INTEGER NOT NULL REFERENCES events(id),
   first_name TEXT,
   last_name TEXT,
@@ -892,7 +899,7 @@ CREATE TABLE IF NOT EXISTS event_contacts (
 CREATE INDEX IF NOT EXISTS idx_event_contacts_event ON event_contacts(event_id, status);
 
 CREATE TABLE IF NOT EXISTS sales_calls (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   contact_id INTEGER NOT NULL REFERENCES event_contacts(id),
   user_id INTEGER,
   user_name TEXT,
@@ -916,17 +923,16 @@ function crm_seed(PDO $pdo)
         ['Nottingham', '20 Jarodale House, 7 Gregory Boulevard, Forest Fields, Nottingham', 'manager', 'nottingham', 'Nottingham Office'],
         ['London', 'CP House, Otterspool Way, Watford, Hertfordshire', 'manager', 'london', 'London Office'],
     ];
-    $hash = password_hash(CRM_SEED_PASSWORD, PASSWORD_DEFAULT);
     $insOffice = $pdo->prepare('INSERT INTO offices (name, address, created_at) VALUES (?, ?, ?)');
     $insUser = $pdo->prepare('INSERT INTO users (username, full_name, password_hash, role, office_id, status, is_office_account, password_changed_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, \'active\', 1, ?, ?, ?)');
     foreach ($offices as $o) {
         $insOffice->execute([$o[0], $o[1], $now]);
         $officeId = (int) $pdo->lastInsertId();
-        $insUser->execute([$o[3], $o[4], $hash, $o[2], $officeId, $now, $now, $now]);
+        $insUser->execute([$o[3], $o[4], password_hash(CRM_SEED_PASSWORD, PASSWORD_DEFAULT), $o[2], $officeId, $now, $now, $now]);
     }
     // The website admin panel login (website-admin.php).
-    $insUser->execute(['admin', 'Website admin', $hash, 'webadmin', null, $now, $now, $now]);
+    $insUser->execute(['admin', 'Website admin', password_hash(CRM_SEED_PASSWORD, PASSWORD_DEFAULT), 'webadmin', null, $now, $now, $now]);
     $code = crm_recovery_code();
     $set = $pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     $set->execute(['recovery_hash', password_hash($code, PASSWORD_DEFAULT)]);

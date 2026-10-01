@@ -13,7 +13,7 @@ function crm_iso_days_ago($days)
 /** Active cases of the office with risk worked out (used by several screens). */
 function crm_active_cases($officeId, $mineUserId = 0)
 {
-    $sql = "SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+    $sql = "SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'active'";
     $p = [$officeId];
     if ($mineUserId) {
@@ -71,7 +71,7 @@ function crm_action_dashboard()
         'renewals_30' => (int) crm_val("SELECT COUNT(*) FROM policies WHERE office_id = ? AND deleted_at IS NULL AND status = 'on_risk' AND renewal_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 30)]),
         'at_risk' => count($high),
         'opportunities' => (int) crm_val("SELECT COUNT(*) FROM opportunities WHERE office_id = ? AND status = 'open'", [$o]),
-        'remortgage_6m' => (int) crm_val("SELECT COUNT(*) FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.fixed_rate_end_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 183)]),
+        'remortgage_6m' => (int) crm_val("SELECT COUNT(*) FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.fixed_rate_end_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 183)]),
     ];
 
     $r = [];
@@ -107,7 +107,7 @@ function crm_action_dashboard()
     if ($kpis['renewals_30']) {
         $r[] = ['level' => 'medium', 'text' => $kpis['renewals_30'] . ' insurance renewal' . ($kpis['renewals_30'] > 1 ? 's' : '') . ' due in the next 30 days', 'link' => '#/protection?status=renewals'];
     }
-    $n = (int) crm_val("SELECT COUNT(*) FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.fixed_rate_end_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 90)]);
+    $n = (int) crm_val("SELECT COUNT(*) FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.fixed_rate_end_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 90)]);
     if ($n) {
         $r[] = ['level' => 'medium', 'text' => $n . ' client' . ($n > 1 ? 's\' fixed rates end' : '\'s fixed rate ends') . ' within 3 months', 'link' => '#/radar'];
     }
@@ -126,14 +126,14 @@ function crm_action_dashboard()
     }
 
     $myTasks = crm_all("SELECT t.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name
-        FROM tasks t LEFT JOIN clients c ON c.id = t.client_id LEFT JOIN leads l ON l.id = t.lead_id
+        FROM tasks t LEFT JOIN clients c ON c.id = t.client_id AND c.office_id = t.office_id LEFT JOIN leads l ON l.id = t.lead_id AND l.office_id = t.office_id
         WHERE t.office_id = ? AND t.deleted_at IS NULL AND t.status = 'open' AND t.assigned_to = ? AND (t.due_date IS NULL OR t.due_date <= ?)
         ORDER BY t.due_date IS NULL, t.due_date, CASE t.priority WHEN 'high' THEN 0 ELSE 1 END LIMIT 20", [$o, $me, $today]);
     $myRisk = array_slice(array_values(array_filter($cases, function ($c) use ($me) {
         return $c['risk']['level'] !== 'low' && ((int) $c['adviser_id'] === $me || (int) $c['administrator_id'] === $me);
     })), 0, 8);
     $recent = crm_all("SELECT a.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name FROM activities a
-        LEFT JOIN clients c ON c.id = a.client_id LEFT JOIN leads l ON l.id = a.lead_id
+        LEFT JOIN clients c ON c.id = a.client_id AND c.office_id = a.office_id LEFT JOIN leads l ON l.id = a.lead_id AND l.office_id = a.office_id
         WHERE a.office_id = ? AND a.deleted_at IS NULL ORDER BY a.created_at DESC, a.id DESC LIMIT 12", [$o]);
     crm_ok([
         'kpis' => $kpis, 'reminders' => $r, 'my_tasks' => $myTasks, 'my_risk' => $myRisk,
@@ -147,7 +147,7 @@ function crm_action_pipeline()
     $o = crm_office_id();
     $mine = crm_in('mine') === '1' ? (int) crm_user()['id'] : 0;
     $rows = crm_active_cases($o, $mine);
-    $recent = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+    $recent = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.completion_date >= ? ORDER BY k.completion_date DESC LIMIT 50",
         [$o, crm_add_days(crm_today(), -30)]);
     $ctx = crm_case_context($o);
@@ -165,7 +165,7 @@ function crm_action_radar()
     $rows = crm_all("SELECT k.id, k.client_id, k.lender, k.product, k.loan_amount, k.rate, k.rate_type, k.fixed_rate_end_date, k.completion_date, k.case_type, k.adviser_id,
             c.first_name || ' ' || c.last_name AS client_name, c.phone, c.email,
             (SELECT o.status FROM opportunities o WHERE o.office_id = k.office_id AND o.case_id = k.id AND o.type = 'remortgage' ORDER BY o.id DESC LIMIT 1) AS opportunity_status
-        FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL AND c.erased_at IS NULL
+        FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL AND c.erased_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed' AND k.fixed_rate_end_date IS NOT NULL
         ORDER BY k.fixed_rate_end_date", [$o]);
     $buckets = ['ended' => [], 'm3' => [], 'm6' => [], 'm12' => [], 'm24' => [], 'later' => []];
@@ -198,7 +198,7 @@ function crm_action_opportunities()
     $o = crm_office_id();
     $status = crm_in_str('status', 20, 'open');
     $sql = "SELECT op.*, c.first_name || ' ' || c.last_name AS client_name, c.adviser_id, c.phone, c.email FROM opportunities op
-        LEFT JOIN clients c ON c.id = op.client_id WHERE op.office_id = ? AND (c.id IS NULL OR c.deleted_at IS NULL)";
+        LEFT JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id WHERE op.office_id = ? AND (c.id IS NULL OR c.deleted_at IS NULL)";
     $p = [$o];
     if ($status !== 'all') {
         $sql .= ' AND op.status = ?';
@@ -253,7 +253,7 @@ function crm_action_opportunity_act()
 function crm_action_compliance()
 {
     $o = crm_office_id();
-    $rows = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+    $rows = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND (k.status = 'active' OR (k.status = 'completed' AND k.completion_date >= ?))", [$o, crm_add_days(crm_today(), -90)]);
     $ctx = crm_case_context($o);
     $sum = ['red' => 0, 'amber' => 0, 'green' => 0];
@@ -275,7 +275,7 @@ function crm_action_documents()
     $o = crm_office_id();
     $status = crm_in_str('status', 20);
     $sql = "SELECT d.*, c.first_name || ' ' || c.last_name AS client_name, k.case_type, k.stage FROM documents d
-        LEFT JOIN clients c ON c.id = d.client_id LEFT JOIN cases k ON k.id = d.case_id
+        LEFT JOIN clients c ON c.id = d.client_id AND c.office_id = d.office_id LEFT JOIN cases k ON k.id = d.case_id AND k.office_id = d.office_id
         WHERE d.office_id = ? AND d.deleted_at IS NULL AND (c.id IS NULL OR c.deleted_at IS NULL)";
     $p = [$o];
     if ($status !== '' && $status !== 'all') {
@@ -328,12 +328,12 @@ function crm_action_calendar()
         ['fixed_rate_end_date', "k.status = 'completed'", 'rate_end', 'Fixed rate ends'],
     ];
     foreach ($dates as $d) {
-        foreach (crm_all("SELECT k.id, k.client_id, k.{$d[0]} AS dt, $who AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+        foreach (crm_all("SELECT k.id, k.client_id, k.{$d[0]} AS dt, $who AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
                 WHERE k.office_id = ? AND k.deleted_at IS NULL AND {$d[1]} AND k.{$d[0]} BETWEEN ? AND ?$mineSql", [$o, $from, $to]) as $r) {
             $items[] = ['date' => $r['dt'], 'kind' => $d[2], 'title' => $d[3] . ': ' . $r['name'], 'case_id' => (int) $r['id'], 'client_id' => (int) $r['client_id']];
         }
     }
-    foreach (crm_all("SELECT p.id, p.client_id, p.renewal_date, p.policy_type, $who AS name FROM policies p JOIN clients c ON c.id = p.client_id AND c.deleted_at IS NULL
+    foreach (crm_all("SELECT p.id, p.client_id, p.renewal_date, p.policy_type, $who AS name FROM policies p JOIN clients c ON c.id = p.client_id AND c.office_id = p.office_id AND c.deleted_at IS NULL
             WHERE p.office_id = ? AND p.deleted_at IS NULL AND p.status = 'on_risk' AND p.renewal_date BETWEEN ? AND ?", [$o, $from, $to]) as $r) {
         $items[] = ['date' => $r['renewal_date'], 'kind' => 'renewal', 'title' => crm_label('policy_type', $r['policy_type']) . ' renewal: ' . $r['name'], 'policy_id' => (int) $r['id'], 'client_id' => (int) $r['client_id']];
     }
@@ -363,7 +363,7 @@ function crm_action_introducer_stats()
     $done = [];
     foreach (crm_all("SELECT COALESCE(k.introducer_id, c.introducer_id) AS iid, COUNT(*) AS n, COALESCE(SUM(k.loan_amount), 0) AS lent,
             COALESCE(SUM(COALESCE(k.proc_fee,0) + COALESCE(k.broker_fee,0)), 0) AS fees
-            FROM cases k JOIN clients c ON c.id = k.client_id WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed'
+            FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'completed'
             AND COALESCE(k.introducer_id, c.introducer_id) IS NOT NULL GROUP BY iid", [$o]) as $r) {
         $done[$r['iid']] = $r;
     }
@@ -510,11 +510,11 @@ function crm_action_search()
             AND (first_name || ' ' || last_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR postcode LIKE ? ESCAPE '\\' OR REPLACE(REPLACE(phone, ' ', ''), '-', '') LIKE ?) LIMIT 8", [$o, $like, $like, $like, $phone]) as $r) {
         $res[] = ['type' => 'client', 'id' => (int) $r['id'], 'title' => $r['first_name'] . ' ' . $r['last_name'], 'sub' => 'Client' . ($r['postcode'] ? ' · ' . $r['postcode'] : '') . ($r['email'] ? ' · ' . $r['email'] : ''), 'link' => '#/clients/' . $r['id']];
     }
-    foreach (crm_all("SELECT k.id, k.client_id, k.case_type, k.stage, k.status, k.lender, c.first_name || ' ' || c.last_name AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+    foreach (crm_all("SELECT k.id, k.client_id, k.case_type, k.stage, k.status, k.lender, c.first_name || ' ' || c.last_name AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
             WHERE k.office_id = ? AND k.deleted_at IS NULL AND (k.lender LIKE ? ESCAPE '\\' OR k.property_address LIKE ? ESCAPE '\\') LIMIT 6", [$o, $like, $like]) as $r) {
         $res[] = ['type' => 'case', 'id' => (int) $r['id'], 'title' => $r['name'] . ': ' . crm_label('case_type', $r['case_type']), 'sub' => 'Case · ' . crm_label('stage', $r['stage']) . ($r['lender'] ? ' · ' . $r['lender'] : ''), 'link' => '#/cases/' . $r['id']];
     }
-    foreach (crm_all("SELECT p.id, p.policy_type, p.provider, p.policy_number, c.first_name || ' ' || c.last_name AS name FROM policies p JOIN clients c ON c.id = p.client_id AND c.deleted_at IS NULL
+    foreach (crm_all("SELECT p.id, p.policy_type, p.provider, p.policy_number, c.first_name || ' ' || c.last_name AS name FROM policies p JOIN clients c ON c.id = p.client_id AND c.office_id = p.office_id AND c.deleted_at IS NULL
             WHERE p.office_id = ? AND p.deleted_at IS NULL AND (p.policy_number LIKE ? ESCAPE '\\' OR p.provider LIKE ? ESCAPE '\\') LIMIT 5", [$o, $like, $like]) as $r) {
         $res[] = ['type' => 'policy', 'id' => (int) $r['id'], 'title' => $r['name'] . ': ' . crm_label('policy_type', $r['policy_type']), 'sub' => 'Policy · ' . ($r['provider'] ?: '') . ($r['policy_number'] ? ' · ' . $r['policy_number'] : ''), 'link' => '#/policies/' . $r['id']];
     }
@@ -547,7 +547,7 @@ function crm_action_notifications()
                 $items[] = ['kind' => 'risk', 'text' => 'High risk: ' . $c['client_name'] . ': ' . $c['risk']['reason'], 'link' => '#/cases/' . $c['id'], 'at' => $c['updated_at']];
             }
         }
-        foreach (crm_all("SELECT op.id, op.title, op.created_at FROM opportunities op JOIN clients c ON c.id = op.client_id AND c.deleted_at IS NULL
+        foreach (crm_all("SELECT op.id, op.title, op.created_at FROM opportunities op JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id AND c.deleted_at IS NULL
                 WHERE op.office_id = ? AND op.status = 'open' AND c.adviser_id = ? AND op.created_at >= ? ORDER BY op.created_at DESC LIMIT 10", [$o, $me, crm_iso_days_ago(7)]) as $op) {
             $items[] = ['kind' => 'opportunity', 'text' => 'New opportunity: ' . $op['title'], 'link' => '#/opportunities', 'at' => $op['created_at']];
         }
@@ -618,7 +618,7 @@ function crm_action_lookup()
 function crm_action_lost()
 {
     $o = crm_office_id();
-    $cases = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.deleted_at IS NULL
+    $cases = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'lost' ORDER BY k.lost_at DESC LIMIT 1000", [$o]);
     $leads = crm_all("SELECT * FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'lost' ORDER BY lost_at DESC LIMIT 1000", [$o]);
     crm_ok(['cases' => $cases, 'leads' => $leads]);
@@ -645,7 +645,7 @@ function crm_action_trash()
             AND NOT EXISTS (SELECT 1 FROM clients p WHERE p.id = t.client_id AND p.deleted_at = t.deleted_at)
             AND NOT EXISTS (SELECT 1 FROM cases p WHERE p.id = t.case_id AND p.deleted_at = t.deleted_at)",
         'introducers' => 'SELECT id, name, deleted_at, deleted_by FROM introducers t WHERE office_id = ? AND deleted_at IS NOT NULL',
-        'templates' => 'SELECT id, name, deleted_at, deleted_by FROM templates t WHERE office_id = ? AND deleted_at IS NOT NULL',
+        'templates' => 'SELECT id, name, deleted_at, deleted_by FROM templates t WHERE (office_id = ? OR office_id IS NULL) AND deleted_at IS NOT NULL',
     ];
     foreach ($q as $entity => $sql) {
         foreach (crm_all($sql . ' ORDER BY deleted_at DESC LIMIT 500', [$o]) as $r) {
@@ -744,14 +744,24 @@ function crm_action_erase_client()
     }
     $id = crm_in_int('id');
     crm_tx(function () use ($id) {
-        $c = crm_must_find('clients', $id);
+        $c = crm_must_find('clients', $id, true);
         $o = (int) $c['office_id'];
+        $surname = (string) $c['last_name'];
         $now = crm_now();
         crm_q("UPDATE clients SET title = NULL, first_name = 'Erased', last_name = 'client #' || id, dob = NULL, email = NULL, phone = NULL, address = NULL,
             postcode = NULL, annual_income = NULL, joint_applicant = NULL, existing_plans = NULL, notes = NULL, marketing_consent = 0, erased_at = ?,
             updated_at = ?, version = version + 1 WHERE id = ?", [$now, $now, $id]);
         $leadIds = array_map('intval', array_column(crm_all('SELECT id FROM leads WHERE office_id = ? AND (client_id = ? OR id = ?)', [$o, $id, (int) $c['lead_id']]), 'id'));
-        $caseIds = array_map('intval', array_column(crm_all('SELECT id FROM cases WHERE client_id = ?', [$id]), 'id'));
+        $caseIds = array_map('intval', array_column(crm_all('SELECT id FROM cases WHERE client_id = ? AND office_id = ?', [$id, $o]), 'id'));
+        $ids = function ($table, $where, array $params) {
+            return array_map('intval', array_column(crm_all('SELECT id FROM ' . $table . ' WHERE ' . $where, $params), 'id'));
+        };
+        $leadIn = $leadIds ? implode(',', $leadIds) : '0';
+        $policyIds = $ids('policies', 'client_id = ? AND office_id = ?', [$id, $o]);
+        $taskIds = $ids('tasks', "office_id = ? AND (client_id = ? OR lead_id IN ($leadIn))", [$o, $id]);
+        $docIds = $ids('documents', 'client_id = ? AND office_id = ?', [$id, $o]);
+        $actIds = $ids('activities', "office_id = ? AND (client_id = ? OR lead_id IN ($leadIn))", [$o, $id]);
+        $oppIds = $ids('opportunities', 'client_id = ? AND office_id = ?', [$id, $o]);
         foreach ($leadIds as $lid) {
             $ec = crm_val('SELECT event_contact_id FROM leads WHERE id = ?', [$lid]);
             crm_q("UPDATE leads SET first_name = 'Erased', last_name = 'lead #' || id, email = NULL, phone = NULL, notes = NULL, updated_at = ?, version = version + 1 WHERE id = ?", [$now, $lid]);
@@ -773,6 +783,16 @@ function crm_action_erase_client()
         $scrub('clients', [$id]);
         $scrub('leads', $leadIds);
         $scrub('cases', $caseIds);
+        $scrub('policies', $policyIds);
+        $scrub('tasks', $taskIds);
+        $scrub('documents', $docIds);
+        $scrub('activities', $actIds);
+        $scrub('opportunities', $oppIds);
+        if (mb_strlen($surname) >= 2) {
+            // Quick Case Lookup searches typed the surname.
+            crm_q("UPDATE audit_log SET summary = 'Quick Case Lookup [erased]' WHERE action = 'lookup' AND summary LIKE ? ESCAPE '\\'",
+                ['%"' . str_replace(['%', '_'], ['\\%', '\\_'], $surname) . '%']);
+        }
         foreach ($leadIds as $lid) {
             crm_q("UPDATE activities SET summary = '[erased]', outcome = NULL WHERE lead_id = ?", [$lid]);
             crm_q("UPDATE tasks SET title = 'Task (client erased)', notes = NULL WHERE lead_id = ?", [$lid]);

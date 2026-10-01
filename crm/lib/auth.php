@@ -149,6 +149,9 @@ function crm_office_id()
         $id = (int) $a['session']['active_office_id'];
     }
     if (!$id || !crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$id])) {
+        if ($u['role'] !== 'admin') {
+            crm_fail(409, 'no_office', 'Your login is not linked to an open office. Ask Newcastle to move it to your office.');
+        }
         $id = (int) crm_val('SELECT id FROM offices WHERE active = 1 ORDER BY id LIMIT 1');
     }
     if (!$id) {
@@ -252,9 +255,7 @@ function crm_action_login()
         if ($lock) {
             crm_fail(423, 'locked', 'Too many wrong passwords. This login is now locked for ' . CRM_LOGIN_LOCK_MINUTES . ' minutes.');
         }
-        $left = CRM_LOGIN_MAX_FAILS - $fails;
-        crm_fail(401, 'bad_login', 'That username or password is not right.'
-            . ($left <= 2 ? ' ' . $left . ' more wrong attempt' . ($left === 1 ? '' : 's') . ' will lock this login.' : ''));
+        crm_fail(401, 'bad_login', 'That username or password is not right.');
     }
     if ($u['status'] === 'pending') {
         crm_fail(403, 'pending', 'Your account request is waiting for approval from Newcastle. You\'ll be able to sign in once it is approved.');
@@ -290,7 +291,7 @@ function crm_action_register()
         crm_fail(400, 'invalid', 'Please enter your full name.', 'full_name');
     }
     $domain = strtolower(CRM_ALLOWED_DOMAIN);
-    if (!crm_valid_email($email) || substr($email, -strlen('@' . $domain)) !== '@' . $domain) {
+    if (!crm_is_map_email($email)) {
         crm_fail(400, 'invalid', 'Accounts can only be created with a MAP email address ending @' . $domain . '.', 'email');
     }
     if (!preg_match('/^[a-z0-9][a-z0-9._-]{2,31}$/', $username)) {
@@ -360,7 +361,9 @@ function crm_action_recover()
     }
     $hash = crm_setting('recovery_hash');
     $u = crm_one("SELECT * FROM users WHERE (username = ? OR email = ?) AND role = 'admin' AND status = 'active'", [$username, $username]);
-    if (!$hash || !$u || !password_verify($code, $hash)) {
+    // Always check the code, so the answer takes as long whether or not the username exists.
+    $codeOk = password_verify($code, $hash ?: '$2y$10$kWmT1SZ3tD16ghmG4dMn.O1eOcx4PMdJs.xILaeES.qGej/iy7o6C');
+    if (!$hash || !$u || !$codeOk) {
         crm_ip_fail('recover');
         crm_audit('recovery_failed', 'users', $u ? (int) $u['id'] : null, 'Wrong recovery code attempt', null, $u ? $u['office_id'] : null);
         crm_fail(401, 'bad_code', 'That recovery code or username is not right. The recovery code only resets a system admin login (Newcastle).');
@@ -393,6 +396,7 @@ function crm_action_logout()
 /** POST changePassword: { current_password, new_password } */
 function crm_action_change_password()
 {
+    crm_ip_guard('login', CRM_IP_MAX_FAILS);
     $a = crm_require_login();
     $u = $a['user'];
     $b = crm_body();

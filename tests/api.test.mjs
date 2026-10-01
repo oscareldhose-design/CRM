@@ -345,3 +345,54 @@ test('the recovery code resets the Newcastle password once', async () => {
   assert.equal((await anon.post('recover', { username: 'newcastle', code, new_password: 'Changed456' })).status, 401, 'a code works once');
   await new Client().login('newcastle', 'Changed123');
 });
+
+test('security: quoted or look-alike addresses cannot request an account', async () => {
+  for (const email of ['"attacker@evil.com"@themaap.co.uk', 'x y@themaap.co.uk', 'x@sub.themaap.co.uk', 'x@themaap.co.uk.evil.com', 'x@themaap.co.ukx']) {
+    const r = await new Client().post('register', { full_name: 'Eve Bad', email, username: 'eve' + Math.floor(Math.random() * 1e6), password: 'Secret123', office_id: officeId.London, role: 'adviser' });
+    assert.equal(r.status, 400, `${email} should be refused`);
+  }
+});
+
+test('security: staff of a closed office are not moved into another office', async () => {
+  await newcastle.login('newcastle', 'Changed123'); // the recovery-code test above changed this password
+  const office = (await newcastle.post('adminOfficeSave', { name: 'Leeds', address: '', phone: '', active: true })).json.id;
+  await new Client().post('register', { full_name: 'Lee Ward', email: 'lee.ward@themaap.co.uk', username: 'lee.ward', password: 'Secret123', office_id: office, role: 'manager' });
+  const lee = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'lee.ward');
+  await newcastle.post('adminUserApprove', { id: lee.id, role: 'manager', office_id: office });
+  const c = new Client();
+  await c.login('lee.ward', 'Secret123');
+  assert.equal((await c.get('list', { entity: 'clients' })).status, 200);
+  await newcastle.post('adminOfficeSave', { id: office, name: 'Leeds', address: '', phone: '', active: false });
+  assert.equal((await c.get('list', { entity: 'clients' })).status, 401, 'signed out when the office closes');
+  await c.login('lee.ward', 'Secret123');
+  const r = await c.get('list', { entity: 'clients' });
+  assert.equal(r.status, 409);
+  assert.equal(r.json.code, 'no_office');
+});
+
+test('security: a case cannot be restored after its client is permanently deleted', async () => {
+  const cl = await nottingham.save('clients', { first_name: 'Orphan', last_name: 'Test' });
+  const k = await nottingham.save('cases', { client_id: cl.id, case_type: 'ftb' });
+  await nottingham.post('delete', { entity: 'cases', id: k.id });
+  await new Promise((r) => setTimeout(r, 1100));
+  await nottingham.post('delete', { entity: 'clients', id: cl.id });
+  assert.equal((await nottingham.post('purge', { entity: 'clients', id: cl.id })).status, 200);
+  const r = await nottingham.post('restore', { entity: 'cases', id: k.id });
+  assert.ok(r.status === 404 || r.json.code === 'parent_gone', `restore refused (${r.status} ${r.text})`);
+  const fresh = await london.save('clients', { first_name: 'London', last_name: 'Person', email: 'london.person@example.com' });
+  assert.notEqual(fresh.id, cl.id, 'record ids are never reused');
+  assert.equal((await nottingham.get('get', { entity: 'cases', id: k.id })).status, 404);
+});
+
+test('security: GDPR erasure also scrubs policy, task and lookup history', async () => {
+  const cl = await nottingham.save('clients', { first_name: 'Gdpr', last_name: 'Person' });
+  const p = await nottingham.save('policies', { client_id: cl.id, policy_type: 'life', notes: 'Gdpr Person has a health condition' });
+  await nottingham.save('policies', { notes: 'Gdpr Person: updated notes' }, p.id, p.version);
+  await nottingham.save('tasks', { title: 'Call Gdpr Person about cover', client_id: cl.id });
+  await london.get('lookup', { surname: 'Person' });
+  assert.equal((await nottingham.post('eraseClient', { id: cl.id, confirm: 'ERASE' })).status, 200);
+  const nott = JSON.stringify((await nottingham.get('audit', { q: '' })).json.rows);
+  assert.ok(!/Gdpr Person/.test(nott), 'no audit line still names the person');
+  const lon = JSON.stringify((await london.get('audit', { q: '' })).json.rows);
+  assert.ok(!/surname "Person"/.test(lon), 'lookups for the surname are scrubbed');
+});
