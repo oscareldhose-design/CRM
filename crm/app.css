@@ -663,7 +663,10 @@ a.list-item:hover .li-title { color: var(--brand); }
   .auth { grid-template-columns: 1fr; }
   .auth-hero { padding: 28px 24px 34px; }
   .auth-hero h1 { padding-top: 26px; font-size: 32px; }
-  .auth-points, .auth-legal { display: none; }
+  .auth-points, .auth-legal, .auth-hero .lead { display: none; }
+  .auth-offices { margin-top: 18px; }
+  .auth-logo { padding-right: 52px; }
+  .theme-fab { top: 16px; right: 16px; left: auto; bottom: auto; width: 44px; height: 44px; }
   .auth-side { padding: 0 16px 40px; margin-top: -24px; }
 }
 @media (max-width: 760px) {
@@ -687,7 +690,6 @@ a.list-item:hover .li-title { color: var(--brand); }
   .modal { max-height: 94vh; border-radius: 22px 22px 0 0; border-bottom: 0; }
   .fab { right: 16px; bottom: 16px; }
   .fab-menu { right: 16px; bottom: 84px; }
-  .theme-fab { left: 16px; bottom: 16px; width: 44px; height: 44px; }
   .table td, .table th { padding: 10px; }
   .mini-stats b { font-size: 16px; }
 }
