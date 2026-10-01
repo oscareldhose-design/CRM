@@ -14,6 +14,7 @@ const CRM_ROLES = [
     'webadmin' => 'Website admin',
 ];
 const CRM_OFFICE_ROLES = ['admin', 'manager', 'adviser', 'administrator'];
+const CRM_ADVICE_TYPES = ['mortgage_protection' => 'Mortgage & protection', 'protection' => 'Protection only'];
 const CRM_COOKIE = 'map_crm_sid';
 
 function crm_is_https()
@@ -99,6 +100,54 @@ function crm_current()
     return $GLOBALS['crm_auth'];
 }
 
+/* ---- Protection-only advisers never see mortgage work ----------------------------------------- */
+const CRM_MORTGAGE_ACTIONS = ['pipeline', 'radar', 'compliance', 'complianceSet', 'documents', 'documentPack', 'lookup'];
+const CRM_PROTECTION_ENQUIRIES = ['protection', 'insurance', 'business_protection', 'other'];
+
+function crm_protection_only($user = null)
+{
+    $u = $user ?: (isset($GLOBALS['crm_user']) ? $GLOBALS['crm_user'] : null);
+    return $u && isset($u['advice_type']) && $u['advice_type'] === 'protection';
+}
+
+/**
+ * For protection-only advisers: an SQL condition that keeps mortgage work out of a query on leads, tasks or
+ * activities ($a is the table name or alias). Cases, documents, mortgage leads, and anything linked to a case or a
+ * mortgage lead are left out. Returns '' for everyone else.
+ */
+function crm_protection_cond($entity, $a)
+{
+    if (!crm_protection_only()) {
+        return '';
+    }
+    $types = "'" . implode("','", CRM_PROTECTION_ENQUIRIES) . "'";
+    if ($entity === 'cases' || $entity === 'documents') {
+        return '0';
+    }
+    if ($entity === 'leads') {
+        return "($a.enquiry_type IS NULL OR $a.enquiry_type = '' OR $a.enquiry_type IN ($types))";
+    }
+    if ($entity === 'tasks' || $entity === 'activities') {
+        return "$a.case_id IS NULL AND NOT EXISTS (SELECT 1 FROM leads pl WHERE pl.id = $a.lead_id AND pl.enquiry_type IS NOT NULL AND pl.enquiry_type <> '' AND pl.enquiry_type NOT IN ($types))";
+    }
+    return '';
+}
+
+/** crm_protection_cond() ready to add to a WHERE clause (' AND …' or ''). */
+function crm_protection_and($entity, $a)
+{
+    $c = crm_protection_cond($entity, $a);
+    return $c === '' ? '' : ' AND ' . $c;
+}
+
+function crm_forbid_mortgage($action)
+{
+    if (in_array($action, CRM_MORTGAGE_ACTIONS, true)
+        || (in_array($action, ['list', 'get', 'save', 'delete', 'restore', 'purge', 'reopen', 'importRows'], true) && in_array(crm_in('entity'), ['cases', 'documents'], true))) {
+        crm_fail(403, 'protection_only', 'Mortgage work is not part of your login (protection only).');
+    }
+}
+
 function crm_require_login()
 {
     $a = crm_current();
@@ -150,12 +199,12 @@ function crm_office_id()
     }
     if (!$id || !crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$id])) {
         if ($u['role'] !== 'admin') {
-            crm_fail(409, 'no_office', 'Your login is not linked to an open office. Ask Newcastle to move it to your office.');
+            crm_fail(409, 'no_office', 'Your login is not linked to an open office yet. Ask the MAP admin to set your office.');
         }
         $id = (int) crm_val('SELECT id FROM offices WHERE active = 1 ORDER BY id LIMIT 1');
     }
     if (!$id) {
-        crm_fail(409, 'no_office', 'Your login is not linked to an office yet. Ask Newcastle to set it.');
+        crm_fail(409, 'no_office', 'Your login is not linked to an office yet. Ask the MAP admin to set your office.');
     }
     $GLOBALS['crm_office_id'] = $id;
     return $id;
@@ -172,6 +221,8 @@ function crm_user_public(array $u)
         'role_label' => isset(CRM_ROLES[$u['role']]) ? CRM_ROLES[$u['role']] : $u['role'],
         'office_id' => $u['office_id'] === null ? null : (int) $u['office_id'],
         'is_office_account' => (int) $u['is_office_account'] === 1,
+        'advice_type' => isset($u['advice_type']) ? $u['advice_type'] : 'mortgage_protection',
+        'protection_only' => isset($u['advice_type']) && $u['advice_type'] === 'protection',
         'must_change_password' => (int) $u['must_change_password'] === 1,
         'last_login_at' => $u['last_login_at'],
     ];
@@ -207,14 +258,13 @@ function crm_action_status()
     $out = [
         'app' => 'map-crm',
         'domain' => CRM_ALLOWED_DOMAIN,
-        'require_approval' => crm_setting('require_approval', '1') === '1',
         'https' => crm_is_https(),
         'offices' => crm_all('SELECT id, name FROM offices WHERE active = 1 ORDER BY name'),
         'user' => null,
     ];
     if ($a) {
         $out['user'] = crm_user_public($a['user']);
-        if ($a['user']['role'] === 'admin') {
+        if ($a['user']['role'] === 'webadmin') {
             $pending = crm_setting('recovery_pending');
             if ($pending) {
                 $out['recovery_code'] = $pending;
@@ -244,7 +294,7 @@ function crm_action_login()
     if ($u['locked_until'] && $u['locked_until'] > crm_now()) {
         $mins = max(1, (int) ceil((strtotime($u['locked_until']) - time()) / 60));
         crm_fail(423, 'locked', 'This login is locked after too many wrong passwords. Try again in ' . $mins . ' minute'
-            . ($mins === 1 ? '' : 's') . ', or ask Newcastle to unlock it.');
+            . ($mins === 1 ? '' : 's') . ', or ask the MAP admin to unlock it.');
     }
     if (!password_verify($password, $u['password_hash'])) {
         crm_ip_fail('login');
@@ -258,10 +308,10 @@ function crm_action_login()
         crm_fail(401, 'bad_login', 'That username or password is not right.');
     }
     if ($u['status'] === 'pending') {
-        crm_fail(403, 'pending', 'Your account request is waiting for approval from Newcastle. You\'ll be able to sign in once it is approved.');
+        crm_fail(403, 'pending', 'Your account request is waiting for approval from the MAP admin. You\'ll be able to sign in once it is approved.');
     }
     if ($u['status'] !== 'active') {
-        crm_fail(403, 'disabled', 'This login has been switched off. Please contact Newcastle.');
+        crm_fail(403, 'disabled', 'This login has been switched off. Please contact the MAP admin.');
     }
     if (password_needs_rehash($u['password_hash'], PASSWORD_DEFAULT)) {
         crm_q('UPDATE users SET password_hash = ? WHERE id = ?', [password_hash($password, PASSWORD_DEFAULT), $u['id']]);
@@ -274,7 +324,7 @@ function crm_action_login()
     crm_ok(['user' => crm_user_public($u)]);
 }
 
-/** POST register: request a login. Only @themaap.co.uk email addresses are accepted. */
+/** POST register: request a login. Only @themaap.co.uk email addresses are accepted; the admin login approves it. */
 function crm_action_register()
 {
     crm_ip_guard('register', 20); // a whole office may sign up from one network
@@ -283,9 +333,7 @@ function crm_action_register()
     $email = crm_norm_email(crm_in_str('email', 254));
     $username = strtolower(crm_in_str('username', 32));
     $password = isset($b['password']) && is_string($b['password']) ? $b['password'] : '';
-    $officeId = crm_in_int('office_id');
-    $role = crm_in_str('role', 20, 'adviser');
-    $note = crm_in_str('note', 300);
+    $advice = crm_in_str('advice_type', 30);
 
     if (mb_strlen($fullName) < 2) {
         crm_fail(400, 'invalid', 'Please enter your full name.', 'full_name');
@@ -301,11 +349,8 @@ function crm_action_register()
     if ($problem) {
         crm_fail(400, 'invalid', $problem, 'password');
     }
-    if (!in_array($role, ['adviser', 'administrator', 'manager', 'sales'], true)) {
-        crm_fail(400, 'invalid', 'Please choose your role.', 'role');
-    }
-    if ($role !== 'sales' && !crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$officeId])) {
-        crm_fail(400, 'invalid', 'Please choose your office.', 'office_id');
+    if (!isset(CRM_ADVICE_TYPES[$advice])) {
+        crm_fail(400, 'invalid', 'Choose "Mortgage & protection" or "Protection only".', 'advice_type');
     }
     $existing = crm_one('SELECT id, status FROM users WHERE email = ?', [$email]);
     if ($existing && $existing['status'] === 'rejected') {
@@ -321,33 +366,41 @@ function crm_action_register()
     if (crm_val('SELECT id FROM users WHERE username = ? OR email = ?', [$username, $username])) {
         crm_fail(409, 'exists', 'That username is taken. Please choose another.', 'username');
     }
-    $needsApproval = crm_setting('require_approval', '1') === '1' || $role === 'manager';
     $now = crm_now();
     $id = crm_insert('users', [
         'username' => $username,
         'email' => $email,
         'full_name' => $fullName,
         'password_hash' => password_hash($password, PASSWORD_DEFAULT),
-        'role' => $role,
-        'requested_role' => $role,
-        'office_id' => $role === 'sales' && !$officeId ? null : $officeId,
-        'status' => $needsApproval ? 'pending' : 'active',
-        'request_note' => $note,
+        'role' => 'adviser',
+        'requested_role' => 'adviser',
+        'advice_type' => $advice,
+        'office_id' => null,
+        'status' => 'pending',
         'password_changed_at' => $now,
         'created_at' => $now,
         'updated_at' => $now,
     ]);
     crm_ip_fail('register'); // counts towards the cap on new requests from one connection (20 per 15 minutes)
-    crm_audit('account_requested', 'users', $id, $fullName . ' (' . $email . ') requested a ' . CRM_ROLES[$role] . ' login', null, $officeId ?: null);
+    crm_audit('account_requested', 'users', $id, $fullName . ' (' . $email . ') requested a login (' . CRM_ADVICE_TYPES[$advice] . ')', null, null);
+    crm_mail(CRM_NOTIFY_EMAIL, 'New MAP CRM login request: ' . $fullName,
+        "Someone has asked for a login to the MAP CRM and is waiting for approval.\n\n"
+        . 'Name: ' . $fullName . "\n"
+        . 'Email: ' . $email . "\n"
+        . 'Username: ' . $username . "\n"
+        . 'Advice: ' . CRM_ADVICE_TYPES[$advice] . "\n"
+        . 'Requested: ' . date('j F Y, H:i') . "\n\n"
+        . "To approve or reject it, sign in to the website admin panel with the admin login and open CRM logins:\n"
+        . rtrim(CRM_PUBLIC_URL, '/') . "/website-admin.php\n\n"
+        . "Only approve people you know work for MAP. Choose their office and role when you approve them.\n",
+        $email);
     crm_ok([
-        'status' => $needsApproval ? 'pending' : 'active',
-        'message' => $needsApproval
-            ? 'Thanks, ' . $fullName . '. Your request has been sent to Newcastle for approval. You can sign in with your username and password once it is approved.'
-            : 'Your login is ready. You can sign in now.',
+        'status' => 'pending',
+        'message' => 'Thanks, ' . $fullName . '. Your request has been sent to the MAP admin for approval. You can sign in with your username and password once it is approved.',
     ]);
 }
 
-/** POST recover: Newcastle's recovery code resets a system admin password. { username, code, new_password } */
+/** POST recover: the recovery code resets the admin login's password. { username, code, new_password } */
 function crm_action_recover()
 {
     crm_ip_guard('recover', 8);
@@ -360,19 +413,19 @@ function crm_action_recover()
         crm_fail(400, 'invalid', $problem, 'new_password');
     }
     $hash = crm_setting('recovery_hash');
-    $u = crm_one("SELECT * FROM users WHERE (username = ? OR email = ?) AND role = 'admin' AND status = 'active'", [$username, $username]);
+    $u = crm_one("SELECT * FROM users WHERE (username = ? OR email = ?) AND role = 'webadmin' AND status = 'active'", [$username, $username]);
     // Always check the code, so the answer takes as long whether or not the username exists.
     $codeOk = password_verify($code, $hash ?: '$2y$10$kWmT1SZ3tD16ghmG4dMn.O1eOcx4PMdJs.xILaeES.qGej/iy7o6C');
     if (!$hash || !$u || !$codeOk) {
         crm_ip_fail('recover');
         crm_audit('recovery_failed', 'users', $u ? (int) $u['id'] : null, 'Wrong recovery code attempt', null, $u ? $u['office_id'] : null);
-        crm_fail(401, 'bad_code', 'That recovery code or username is not right. The recovery code only resets a system admin login (Newcastle).');
+        crm_fail(401, 'bad_code', 'That recovery code or username is not right. The recovery code only resets the admin login.');
     }
     crm_tx(function () use ($u, $new) {
         crm_q('UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL, must_change_password = 0, password_changed_at = ?, updated_at = ? WHERE id = ?',
             [password_hash($new, PASSWORD_DEFAULT), crm_now(), crm_now(), $u['id']]);
         crm_q('DELETE FROM sessions WHERE user_id = ?', [$u['id']]);
-        // A recovery code works once: make a new one, shown to Newcastle at next sign-in.
+        // A recovery code works once: make a new one, shown to the admin login at its next sign-in.
         $next = crm_recovery_code();
         crm_set_setting('recovery_hash', password_hash($next, PASSWORD_DEFAULT));
         crm_set_setting('recovery_pending', $next);
@@ -420,7 +473,7 @@ function crm_action_change_password()
     crm_ok(['message' => 'Password changed. Any other devices signed in as you have been signed out.']);
 }
 
-/** POST ackRecovery: Newcastle has written the recovery code down; stop showing it. */
+/** POST ackRecovery: the admin has written the recovery code down; stop showing it. */
 function crm_action_ack_recovery()
 {
     crm_q("DELETE FROM settings WHERE key = 'recovery_pending'");
@@ -451,7 +504,7 @@ function crm_action_meta()
         'user' => crm_user_public($u),
         'office' => $officeId ? crm_one('SELECT id, name, address, phone FROM offices WHERE id = ?', [$officeId]) : null,
         'offices' => crm_all('SELECT id, name FROM offices WHERE active = 1 ORDER BY name'),
-        'users' => crm_all("SELECT id, full_name, role, office_id, status, email FROM users WHERE status IN ('active', 'disabled') ORDER BY full_name"),
+        'users' => crm_all("SELECT id, full_name, role, office_id, status, email, is_office_account, advice_type FROM users WHERE status IN ('active', 'disabled') AND role <> 'webadmin' ORDER BY is_office_account, full_name"),
         'enums' => crm_enums(),
         'roles' => CRM_ROLES,
         'today' => crm_today(),
@@ -463,7 +516,6 @@ function crm_action_meta()
     if ($isOffice) {
         $out['introducers'] = crm_all('SELECT id, name, company FROM introducers WHERE office_id = ? AND deleted_at IS NULL AND active = 1 ORDER BY name', [$officeId]);
         $out['compliance_items'] = crm_compliance_items();
-        $out['pending_requests'] = $u['role'] === 'admin' ? (int) crm_val("SELECT COUNT(*) FROM users WHERE status = 'pending'") : 0;
     }
     crm_ok($out);
 }

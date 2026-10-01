@@ -28,9 +28,62 @@ function crm_active_cases($officeId, $mineUserId = 0)
     return $rows;
 }
 
+/** Dashboard for protection-only advisers: cover, quotes and renewals, no mortgage figures. */
+function crm_dashboard_protection()
+{
+    $o = crm_office_id();
+    $me = (int) crm_user()['id'];
+    $today = crm_today();
+    $p = crm_one("SELECT SUM(CASE WHEN status = 'on_risk' THEN 1 ELSE 0 END) AS in_force,
+            COALESCE(SUM(CASE WHEN status = 'on_risk' THEN premium ELSE 0 END), 0) AS premiums,
+            SUM(CASE WHEN status IN ('quote','applied') THEN 1 ELSE 0 END) AS quotes,
+            SUM(CASE WHEN status = 'quote' AND COALESCE(quote_date, substr(created_at, 1, 10)) <= ? THEN 1 ELSE 0 END) AS quiet
+        FROM policies WHERE office_id = ? AND deleted_at IS NULL", [crm_add_days($today, -14), $o]);
+    $kpis = [
+        'new_leads_7d' => (int) crm_val('SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND created_at >= ?' . crm_protection_and('leads', 'leads'), [$o, crm_iso_days_ago(7)]),
+        'hot_leads' => (int) crm_val("SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND rating = 'HOT' AND status IN ('new','contacted','qualified')" . crm_protection_and('leads', 'leads'), [$o]),
+        'policies_in_force' => (int) $p['in_force'],
+        'premiums' => (float) $p['premiums'],
+        'open_quotes' => (int) $p['quotes'],
+        'tasks_overdue' => (int) crm_val("SELECT COUNT(*) FROM tasks WHERE office_id = ? AND deleted_at IS NULL AND status = 'open' AND due_date < ?" . crm_protection_and('tasks', 'tasks'), [$o, $today]),
+        'tasks_today' => (int) crm_val("SELECT COUNT(*) FROM tasks WHERE office_id = ? AND deleted_at IS NULL AND status = 'open' AND due_date = ?" . crm_protection_and('tasks', 'tasks'), [$o, $today]),
+        'renewals_30' => (int) crm_val("SELECT COUNT(*) FROM policies WHERE office_id = ? AND deleted_at IS NULL AND status = 'on_risk' AND renewal_date BETWEEN ? AND ?", [$o, $today, crm_add_days($today, 30)]),
+        'opportunities' => (int) crm_val("SELECT COUNT(*) FROM opportunities WHERE office_id = ? AND status = 'open' AND type <> 'remortgage'", [$o]),
+    ];
+    $r = [];
+    $n = (int) crm_val("SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'new' AND rating = 'HOT'" . crm_protection_and('leads', 'leads'), [$o]);
+    if ($n) {
+        $r[] = ['level' => 'high', 'text' => $n . ' HOT lead' . ($n > 1 ? 's are' : ' is') . ' waiting for first contact', 'link' => '#/leads?rating=HOT'];
+    }
+    if ($kpis['tasks_overdue']) {
+        $r[] = ['level' => 'high', 'text' => $kpis['tasks_overdue'] . ' overdue task' . ($kpis['tasks_overdue'] > 1 ? 's' : ''), 'link' => '#/tasks?due=overdue'];
+    }
+    if ($kpis['renewals_30']) {
+        $r[] = ['level' => 'medium', 'text' => $kpis['renewals_30'] . ' renewal' . ($kpis['renewals_30'] > 1 ? 's' : '') . ' due in the next 30 days', 'link' => '#/protection?status=renewals'];
+    }
+    if ((int) $p['quiet']) {
+        $r[] = ['level' => 'medium', 'text' => (int) $p['quiet'] . ' quote' . ((int) $p['quiet'] > 1 ? 's have' : ' has') . ' been waiting over 14 days', 'link' => '#/protection?status=quotes'];
+    }
+    if ($kpis['opportunities']) {
+        $r[] = ['level' => 'info', 'text' => $kpis['opportunities'] . ' open opportunit' . ($kpis['opportunities'] > 1 ? 'ies' : 'y') . ' to follow up', 'link' => '#/opportunities'];
+    }
+    $myTasks = crm_all("SELECT t.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name
+        FROM tasks t LEFT JOIN clients c ON c.id = t.client_id AND c.office_id = t.office_id LEFT JOIN leads l ON l.id = t.lead_id AND l.office_id = t.office_id
+        WHERE t.office_id = ? AND t.deleted_at IS NULL AND t.status = 'open' AND t.assigned_to = ? AND (t.due_date IS NULL OR t.due_date <= ?)" . crm_protection_and('tasks', 't') . "
+        ORDER BY t.due_date IS NULL, t.due_date, CASE t.priority WHEN 'high' THEN 0 ELSE 1 END LIMIT 20", [$o, $me, $today]);
+    $recent = crm_all("SELECT a.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name FROM activities a
+        LEFT JOIN clients c ON c.id = a.client_id AND c.office_id = a.office_id LEFT JOIN leads l ON l.id = a.lead_id AND l.office_id = a.office_id
+        WHERE a.office_id = ? AND a.deleted_at IS NULL" . crm_protection_and('activities', 'a') . " AND (a.policy_id IS NOT NULL OR a.lead_id IS NOT NULL OR a.user_id = ?)
+        ORDER BY a.created_at DESC, a.id DESC LIMIT 12", [$o, $me]);
+    crm_ok(['mode' => 'protection', 'kpis' => $kpis, 'reminders' => $r, 'my_tasks' => $myTasks, 'recent' => $recent]);
+}
+
 /** GET dashboard: today's key numbers and what needs attention now. */
 function crm_action_dashboard()
 {
+    if (crm_protection_only()) {
+        crm_dashboard_protection();
+    }
     $o = crm_office_id();
     $u = crm_user();
     $me = (int) $u['id'];
@@ -118,12 +171,6 @@ function crm_action_dashboard()
     if ($kpis['opportunities']) {
         $r[] = ['level' => 'info', 'text' => $kpis['opportunities'] . ' open opportunit' . ($kpis['opportunities'] > 1 ? 'ies' : 'y') . ' to follow up', 'link' => '#/opportunities'];
     }
-    if ($u['role'] === 'admin') {
-        $n = (int) crm_val("SELECT COUNT(*) FROM users WHERE status = 'pending'");
-        if ($n) {
-            $r[] = ['level' => 'high', 'text' => $n . ' account request' . ($n > 1 ? 's are' : ' is') . ' waiting for your approval', 'link' => '#/admin'];
-        }
-    }
 
     $myTasks = crm_all("SELECT t.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name
         FROM tasks t LEFT JOIN clients c ON c.id = t.client_id AND c.office_id = t.office_id LEFT JOIN leads l ON l.id = t.lead_id AND l.office_id = t.office_id
@@ -204,13 +251,16 @@ function crm_action_opportunities()
         $sql .= ' AND op.status = ?';
         $p[] = $status;
     }
+    if (crm_protection_only()) {
+        $sql .= " AND op.type <> 'remortgage'";
+    }
     if ($t = crm_in_str('type', 30)) {
         $sql .= ' AND op.type = ?';
         $p[] = $t;
     }
     $rows = crm_all($sql . ' ORDER BY op.due_date IS NULL, op.due_date, op.created_at DESC LIMIT 2000', $p);
     $counts = [];
-    foreach (crm_all("SELECT type, COUNT(*) AS n FROM opportunities WHERE office_id = ? AND status = 'open' GROUP BY type", [$o]) as $c) {
+    foreach (crm_all("SELECT type, COUNT(*) AS n FROM opportunities WHERE office_id = ? AND status = 'open'" . (crm_protection_only() ? " AND type <> 'remortgage'" : '') . ' GROUP BY type', [$o]) as $c) {
         $counts[$c['type']] = (int) $c['n'];
     }
     crm_ok(['rows' => $rows, 'counts' => $counts]);
@@ -309,7 +359,7 @@ function crm_action_calendar()
     $mine = crm_in('mine') === '1' ? (int) crm_user()['id'] : 0;
     $items = [];
     $sql = "SELECT t.id, t.title, t.due_date, t.priority, t.assigned_to, t.client_id, t.lead_id, t.case_id, t.status FROM tasks t
-        WHERE t.office_id = ? AND t.deleted_at IS NULL AND t.status = 'open' AND t.due_date IS NOT NULL AND t.due_date <= ? AND (t.due_date >= ? OR t.due_date < ?)";
+        WHERE t.office_id = ? AND t.deleted_at IS NULL AND t.status = 'open' AND t.due_date IS NOT NULL AND t.due_date <= ? AND (t.due_date >= ? OR t.due_date < ?)" . crm_protection_and('tasks', 't');
     $p = [$o, $to, $from, $today];
     if ($mine) {
         $sql .= ' AND t.assigned_to = ?';
@@ -327,7 +377,7 @@ function crm_action_calendar()
         ['completion_date', "k.status = 'completed'", 'completed', 'Completed'],
         ['fixed_rate_end_date', "k.status = 'completed'", 'rate_end', 'Fixed rate ends'],
     ];
-    foreach ($dates as $d) {
+    foreach (crm_protection_only() ? [] : $dates as $d) {
         foreach (crm_all("SELECT k.id, k.client_id, k.{$d[0]} AS dt, $who AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
                 WHERE k.office_id = ? AND k.deleted_at IS NULL AND {$d[1]} AND k.{$d[0]} BETWEEN ? AND ?$mineSql", [$o, $from, $to]) as $r) {
             $items[] = ['date' => $r['dt'], 'kind' => $d[2], 'title' => $d[3] . ': ' . $r['name'], 'case_id' => (int) $r['id'], 'client_id' => (int) $r['client_id']];
@@ -388,7 +438,7 @@ function crm_action_team()
     $o = crm_office_id();
     $today = crm_today();
     $threshold = (int) crm_setting('team_threshold', '30');
-    $users = crm_all("SELECT id, full_name, role, office_id, email, last_login_at FROM users WHERE status = 'active' AND role IN ('admin','manager','adviser','administrator')
+    $users = crm_all("SELECT id, full_name, role, office_id, email, last_login_at, advice_type FROM users WHERE status = 'active' AND is_office_account = 0 AND role IN ('admin','manager','adviser','administrator')
         AND (office_id = ? OR id IN (SELECT adviser_id FROM cases WHERE office_id = ? AND status = 'active' AND deleted_at IS NULL)
              OR id IN (SELECT assigned_to FROM tasks WHERE office_id = ? AND status = 'open' AND deleted_at IS NULL)) ORDER BY full_name", [$o, $o, $o]);
     $out = [];
@@ -471,7 +521,7 @@ function crm_action_reports()
     });
     $sources = crm_all("SELECT COALESCE(source, 'unknown') AS source, COUNT(*) AS leads, SUM(CASE WHEN client_id IS NOT NULL THEN 1 ELSE 0 END) AS converted,
             SUM(CASE WHEN status = 'lost' THEN 1 ELSE 0 END) AS lost, SUM(CASE WHEN rating = 'HOT' THEN 1 ELSE 0 END) AS hot
-        FROM leads WHERE office_id = ? AND deleted_at IS NULL AND substr(created_at, 1, 10) BETWEEN ? AND ? GROUP BY COALESCE(source, 'unknown') ORDER BY leads DESC", [$o, $from, $to]);
+        FROM leads WHERE office_id = ? AND deleted_at IS NULL AND substr(created_at, 1, 10) BETWEEN ? AND ?" . crm_protection_and('leads', 'leads') . " GROUP BY COALESCE(source, 'unknown') ORDER BY leads DESC", [$o, $from, $to]);
     $months = [];
     for ($i = 11; $i >= 0; $i--) {
         $m = date('Y-m', strtotime(date('Y-m-01') . " -$i months"));
@@ -486,6 +536,15 @@ function crm_action_reports()
     }
     $lost = crm_all("SELECT COALESCE(NULLIF(lost_reason, ''), 'No reason given') AS reason, COUNT(*) AS n FROM cases WHERE office_id = ? AND deleted_at IS NULL
         AND status = 'lost' AND substr(lost_at, 1, 10) BETWEEN ? AND ? GROUP BY reason ORDER BY n DESC", [$o, $from, $to]);
+    if (crm_protection_only()) {
+        // Protection-only advisers never see mortgage figures.
+        $rev = array_values(array_filter(array_map(function ($r) {
+            return array_merge($r, ['completions' => 0, 'lent' => 0, 'proc_fees' => 0, 'broker_fees' => 0, 'total' => $r['commission']]);
+        }, $rev), function ($r) {
+            return $r['policies'] > 0;
+        }));
+        $pipe = $quiet = $months = $lost = [];
+    }
     crm_ok(['from' => $from, 'to' => $to, 'pipeline' => array_values($pipe), 'revenue' => array_values($rev), 'quiet' => $quiet,
         'quiet_days' => $quietDays, 'sources' => $sources, 'months' => array_values($months), 'lost' => $lost]);
 }
@@ -502,7 +561,7 @@ function crm_action_search()
     $digits = preg_replace('/\D+/', '', $q);
     $phone = strlen($digits) >= 5 ? '%' . $digits . '%' : '__none__';
     $res = [];
-    foreach (crm_all("SELECT id, first_name, last_name, email, phone, rating, status FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status <> 'converted'
+    foreach (crm_all("SELECT id, first_name, last_name, email, phone, rating, status FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status <> 'converted'" . crm_protection_and('leads', 'leads') . "
             AND (first_name || ' ' || last_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR REPLACE(REPLACE(phone, ' ', ''), '-', '') LIKE ?) LIMIT 8", [$o, $like, $like, $phone]) as $r) {
         $res[] = ['type' => 'lead', 'id' => (int) $r['id'], 'title' => $r['first_name'] . ' ' . $r['last_name'], 'sub' => 'Lead · ' . $r['rating'] . ' · ' . crm_label('lead_status', $r['status']), 'link' => '#/leads/' . $r['id']];
     }
@@ -510,7 +569,7 @@ function crm_action_search()
             AND (first_name || ' ' || last_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR postcode LIKE ? ESCAPE '\\' OR REPLACE(REPLACE(phone, ' ', ''), '-', '') LIKE ?) LIMIT 8", [$o, $like, $like, $like, $phone]) as $r) {
         $res[] = ['type' => 'client', 'id' => (int) $r['id'], 'title' => $r['first_name'] . ' ' . $r['last_name'], 'sub' => 'Client' . ($r['postcode'] ? ' · ' . $r['postcode'] : '') . ($r['email'] ? ' · ' . $r['email'] : ''), 'link' => '#/clients/' . $r['id']];
     }
-    foreach (crm_all("SELECT k.id, k.client_id, k.case_type, k.stage, k.status, k.lender, c.first_name || ' ' || c.last_name AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
+    foreach (crm_protection_only() ? [] : crm_all("SELECT k.id, k.client_id, k.case_type, k.stage, k.status, k.lender, c.first_name || ' ' || c.last_name AS name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
             WHERE k.office_id = ? AND k.deleted_at IS NULL AND (k.lender LIKE ? ESCAPE '\\' OR k.property_address LIKE ? ESCAPE '\\') LIMIT 6", [$o, $like, $like]) as $r) {
         $res[] = ['type' => 'case', 'id' => (int) $r['id'], 'title' => $r['name'] . ': ' . crm_label('case_type', $r['case_type']), 'sub' => 'Case · ' . crm_label('stage', $r['stage']) . ($r['lender'] ? ' · ' . $r['lender'] : ''), 'link' => '#/cases/' . $r['id']];
     }
@@ -534,15 +593,15 @@ function crm_action_notifications()
     if (in_array($u['role'], CRM_OFFICE_ROLES, true)) {
         $o = crm_office_id();
         foreach (crm_all("SELECT id, title, due_date, priority, created_at FROM tasks WHERE office_id = ? AND deleted_at IS NULL AND status = 'open' AND assigned_to = ?
-                AND due_date <= ? ORDER BY due_date LIMIT 25", [$o, $me, $today]) as $t) {
+                AND due_date <= ?" . crm_protection_and('tasks', 'tasks') . " ORDER BY due_date LIMIT 25", [$o, $me, $today]) as $t) {
             $items[] = ['kind' => $t['due_date'] < $today ? 'overdue' : 'due', 'text' => ($t['due_date'] < $today ? 'Overdue: ' : 'Due today: ') . $t['title'],
                 'link' => '#/tasks/' . $t['id'], 'at' => $t['due_date'] < $today ? $t['created_at'] : $today . 'T00:00:00Z'];
         }
         foreach (crm_all("SELECT id, first_name, last_name, rating, created_at FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'new' AND adviser_id = ?
-                AND created_at >= ? ORDER BY created_at DESC LIMIT 10", [$o, $me, crm_iso_days_ago(3)]) as $l) {
+                AND created_at >= ?" . crm_protection_and('leads', 'leads') . " ORDER BY created_at DESC LIMIT 10", [$o, $me, crm_iso_days_ago(3)]) as $l) {
             $items[] = ['kind' => 'lead', 'text' => 'New ' . $l['rating'] . ' lead for you: ' . $l['first_name'] . ' ' . $l['last_name'], 'link' => '#/leads/' . $l['id'], 'at' => $l['created_at']];
         }
-        foreach (crm_active_cases($o, $me) as $c) {
+        foreach (crm_protection_only() ? [] : crm_active_cases($o, $me) as $c) {
             if ($c['risk']['level'] === 'high') {
                 $items[] = ['kind' => 'risk', 'text' => 'High risk: ' . $c['client_name'] . ': ' . $c['risk']['reason'], 'link' => '#/cases/' . $c['id'], 'at' => $c['updated_at']];
             }
@@ -552,9 +611,9 @@ function crm_action_notifications()
             $items[] = ['kind' => 'opportunity', 'text' => 'New opportunity: ' . $op['title'], 'link' => '#/opportunities', 'at' => $op['created_at']];
         }
     }
-    if ($u['role'] === 'admin') {
+    if ($u['role'] === 'webadmin') {
         foreach (crm_all("SELECT id, full_name, email, created_at FROM users WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20") as $p) {
-            $items[] = ['kind' => 'request', 'text' => 'Account request: ' . $p['full_name'] . ' (' . $p['email'] . ')', 'link' => '#/admin', 'at' => $p['created_at']];
+            $items[] = ['kind' => 'request', 'text' => 'Account request: ' . $p['full_name'] . ' (' . $p['email'] . ')', 'link' => '#logins', 'at' => $p['created_at']];
         }
     }
     if (in_array($u['role'], ['sales', 'manager', 'admin'], true)) {
@@ -618,9 +677,9 @@ function crm_action_lookup()
 function crm_action_lost()
 {
     $o = crm_office_id();
-    $cases = crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
+    $cases = crm_protection_only() ? [] : crm_all("SELECT k.*, c.first_name || ' ' || c.last_name AS client_name FROM cases k JOIN clients c ON c.id = k.client_id AND c.office_id = k.office_id AND c.deleted_at IS NULL
         WHERE k.office_id = ? AND k.deleted_at IS NULL AND k.status = 'lost' ORDER BY k.lost_at DESC LIMIT 1000", [$o]);
-    $leads = crm_all("SELECT * FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'lost' ORDER BY lost_at DESC LIMIT 1000", [$o]);
+    $leads = crm_all("SELECT * FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'lost'" . crm_protection_and('leads', 'leads') . ' ORDER BY lost_at DESC LIMIT 1000', [$o]);
     crm_ok(['cases' => $cases, 'leads' => $leads]);
 }
 
@@ -647,6 +706,9 @@ function crm_action_trash()
         'introducers' => 'SELECT id, name, deleted_at, deleted_by FROM introducers t WHERE office_id = ? AND deleted_at IS NOT NULL',
         'templates' => 'SELECT id, name, deleted_at, deleted_by FROM templates t WHERE (office_id = ? OR office_id IS NULL) AND deleted_at IS NOT NULL',
     ];
+    if (crm_protection_only()) {
+        unset($q['cases'], $q['documents']);
+    }
     foreach ($q as $entity => $sql) {
         foreach (crm_all($sql . ' ORDER BY deleted_at DESC LIMIT 500', [$o]) as $r) {
             $r['entity'] = $entity;
@@ -659,7 +721,7 @@ function crm_action_trash()
     crm_ok(['rows' => $rows]);
 }
 
-/** GET audit: full change history. ?entity=&entity_id=&user_id=&before= (managers see their office; Newcastle can see all). */
+/** GET audit: full change history for the office. ?entity=&entity_id=&user_id=&before= */
 function crm_action_audit()
 {
     $u = crm_user();
@@ -711,7 +773,7 @@ function crm_download($filename, $mime, $content)
     exit;
 }
 
-/** GET backup: a JSON copy of the office's data (Newcastle can download every office with ?scope=all). */
+/** GET backup: a JSON copy of the office's data (the admin login can download every office from the website admin panel). */
 function crm_action_backup()
 {
     $u = crm_user();

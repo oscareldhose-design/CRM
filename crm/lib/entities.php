@@ -163,6 +163,7 @@ function crm_find($entity, $id, $includeDeleted = false)
     if (!$includeDeleted) {
         $sql .= ' AND deleted_at IS NULL';
     }
+    $sql .= crm_protection_and($entity, $entity);
     return crm_one($sql, [(int) $id, $officeId]);
 }
 
@@ -295,6 +296,9 @@ function crm_prepare_row($entity, array $row, $before)
     $u = crm_user();
     switch ($entity) {
         case 'leads':
+            if (crm_protection_only() && !empty($row['enquiry_type']) && !in_array($row['enquiry_type'], CRM_PROTECTION_ENQUIRIES, true)) {
+                crm_fail(400, 'invalid', 'Choose a protection or insurance enquiry.', 'enquiry_type');
+            }
             list($score, $rating) = crm_lead_score($merged);
             $row['score'] = $score;
             $row['rating'] = $rating;
@@ -463,7 +467,8 @@ function crm_action_list()
 
     switch ($entity) {
         case 'leads':
-            $sql = 'SELECT l.*, i.name AS introducer_name FROM leads l LEFT JOIN introducers i ON i.id = l.introducer_id AND i.office_id = l.office_id WHERE l.office_id = ? AND l.deleted_at IS NULL';
+            $sql = 'SELECT l.*, i.name AS introducer_name FROM leads l LEFT JOIN introducers i ON i.id = l.introducer_id AND i.office_id = l.office_id WHERE l.office_id = ? AND l.deleted_at IS NULL'
+                . crm_protection_and('leads', 'l');
             $p[] = $officeId;
             if ($status === '' || $status === 'open') {
                 $where[] = "l.status IN ('new','contacted','qualified')";
@@ -560,7 +565,7 @@ function crm_action_list()
         case 'tasks':
             $sql = "SELECT t.*, c.first_name || ' ' || c.last_name AS client_name, l.first_name || ' ' || l.last_name AS lead_name
                 FROM tasks t LEFT JOIN clients c ON c.id = t.client_id AND c.office_id = t.office_id LEFT JOIN leads l ON l.id = t.lead_id AND l.office_id = t.office_id
-                WHERE t.office_id = ? AND t.deleted_at IS NULL";
+                WHERE t.office_id = ? AND t.deleted_at IS NULL" . crm_protection_and('tasks', 't');
             $p[] = $officeId;
             if ($status === '' || $status === 'open') {
                 $where[] = "t.status = 'open'";
@@ -628,6 +633,9 @@ function crm_action_list()
         case 'templates':
             $sql = 'SELECT t.* FROM templates t WHERE (t.office_id = ? OR t.office_id IS NULL) AND t.deleted_at IS NULL';
             $p[] = $officeId;
+            if (crm_protection_only()) {
+                $where[] = "COALESCE(t.category, '') NOT IN ('Cases', 'Remortgage', 'Mortgage', 'Mortgages')";
+            }
             $order = ' ORDER BY t.category, t.name';
             break;
         default:
@@ -652,12 +660,14 @@ function crm_action_list()
 
 function crm_activities_where($col, $id)
 {
-    return crm_all('SELECT * FROM activities WHERE ' . $col . ' = ? AND office_id = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 500', [$id, crm_office_id()]);
+    return crm_all('SELECT * FROM activities WHERE ' . $col . ' = ? AND office_id = ? AND deleted_at IS NULL' . crm_protection_and('activities', 'activities')
+        . ' ORDER BY created_at DESC, id DESC LIMIT 500', [$id, crm_office_id()]);
 }
 
 function crm_tasks_where($col, $id)
 {
-    return crm_all("SELECT * FROM tasks WHERE $col = ? AND office_id = ? AND deleted_at IS NULL ORDER BY status = 'done', due_date IS NULL, due_date, id", [$id, crm_office_id()]);
+    return crm_all("SELECT * FROM tasks WHERE $col = ? AND office_id = ? AND deleted_at IS NULL" . crm_protection_and('tasks', 'tasks')
+        . " ORDER BY status = 'done', due_date IS NULL, due_date, id", [$id, crm_office_id()]);
 }
 
 /** GET get: ?entity=&id= — the record plus everything linked to it. */
@@ -691,6 +701,13 @@ function crm_action_get()
             $out['tasks'] = crm_tasks_where('client_id', $id);
             $out['documents'] = crm_all('SELECT * FROM documents WHERE client_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY case_id, name', [$id, $officeId]);
             $out['opportunities'] = crm_all("SELECT * FROM opportunities WHERE client_id = ? AND office_id = ? ORDER BY status = 'open' DESC, created_at DESC", [$id, $officeId]);
+            if (crm_protection_only()) {
+                $out['cases'] = [];
+                $out['documents'] = [];
+                $out['opportunities'] = array_values(array_filter($out['opportunities'], function ($o) {
+                    return $o['type'] !== 'remortgage';
+                }));
+            }
             $out['lead'] = $r['lead_id'] ? crm_one('SELECT id, source, enquiry_type, created_at, score, rating FROM leads WHERE id = ?', [$r['lead_id']]) : null;
             break;
         case 'cases':
@@ -706,7 +723,8 @@ function crm_action_get()
             $out['tasks'] = crm_tasks_where('policy_id', $id);
             break;
         case 'introducers':
-            $out['leads'] = crm_all('SELECT id, first_name, last_name, status, rating, created_at, client_id FROM leads WHERE introducer_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY created_at DESC', [$id, $officeId]);
+            $out['leads'] = crm_all('SELECT id, first_name, last_name, status, rating, created_at, client_id FROM leads WHERE introducer_id = ? AND office_id = ? AND deleted_at IS NULL'
+                . crm_protection_and('leads', 'leads') . ' ORDER BY created_at DESC', [$id, $officeId]);
             $out['clients'] = crm_all('SELECT id, first_name, last_name, created_at FROM clients WHERE introducer_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY created_at DESC', [$id, $officeId]);
             break;
     }
@@ -871,7 +889,7 @@ function crm_action_convert_lead()
         $caseId = null;
         $policyId = null;
         $types = crm_enums()['case_type'];
-        if ($createCase && $l['enquiry_type'] && isset($types[$l['enquiry_type']])) {
+        if ($createCase && $l['enquiry_type'] && isset($types[$l['enquiry_type']]) && !crm_protection_only()) {
             $case = crm_save_record('cases', 0, [
                 'client_id' => $clientId, 'case_type' => $l['enquiry_type'], 'stage' => 'fact_find',
                 'loan_amount' => $l['loan_amount'], 'property_value' => $l['property_value'],

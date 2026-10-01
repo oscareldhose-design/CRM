@@ -283,7 +283,8 @@ function fieldOptions(f, value) {
   if (f.type === 'user') {
     const roles = f.roles || ['admin', 'manager', 'adviser', 'administrator'];
     const officeId = S.meta.office && S.meta.office.id;
-    opts = S.meta.users.filter((u) => u.status === 'active' && roles.includes(u.role) && (!officeId || u.office_id === officeId || String(u.id) === String(value)))
+    opts = S.meta.users.filter((u) => u.status === 'active' && roles.includes(u.role) && (!officeId || u.office_id === officeId || String(u.id) === String(value))
+        && (f.allowOffice || !u.is_office_account || String(u.id) === String(value)))
       .map((u) => [u.id, u.full_name + (u.role === 'administrator' ? ' (admin)' : '')]);
   } else if (f.type === 'introducer') {
     opts = (S.meta.introducers || []).map((i) => [i.id, i.name + (i.company ? ` (${i.company})` : '')]);
@@ -436,7 +437,7 @@ function mountTable(el, opts) {
         ${state.sortK === c.k ? raw(`aria-sort="${state.dir > 0 ? 'ascending' : 'descending'}"`) : ''}>${c.label}${state.sortK === c.k ? (state.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`)}</tr></thead>
       <tbody>${shown.map((r, i) => {
         const href = opts.rowHref ? opts.rowHref(r) : null;
-        return h`<tr class="${href ? 'clickable' : ''}" ${href ? raw(`data-href="${esc(href)}"`) : ''} data-i="${i}">${opts.columns.map((c) => h`<td class="${c.right ? 'right num' : ''} ${c.cls || ''}">${c.render ? c.render(r) : (r[c.k] ?? '')}</td>`)}</tr>`;
+        return h`<tr class="${href ? 'clickable' : ''}" ${href ? raw(`data-href="${esc(href)}"`) : ''} data-i="${i}">${opts.columns.map((c) => h`<td class="${c.right ? 'right num' : ''} ${c.cls || ''}">${c.render ? c.render(r) : (valueOf(c, r) ?? '')}</td>`)}</tr>`;
       })}</tbody></table></div>
       <div class="table-foot"><span>${rows.length > limit ? `Showing ${num(limit)} of ${num(rows.length)}` : plural(rows.length, opts.noun || 'row')}</span>
       ${opts.exportName ? h`<button class="link-btn" type="button" data-export>${icon('download', 'ic-sm')} Download Excel</button>` : ''}</div></div>`);

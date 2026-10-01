@@ -1,5 +1,5 @@
 <?php
-/* MAP CRM: system admin (Newcastle): logins, account requests, offices, settings, recovery code. */
+/* MAP CRM: the admin login (website admin panel): CRM logins, account requests, offices, settings, recovery code. */
 if (!defined('MAP_CRM')) {
     http_response_code(404);
     exit;
@@ -11,6 +11,8 @@ function crm_admin_user_row(array $u)
         'status' => $u['status'],
         'office_name' => $u['office_id'] ? crm_val('SELECT name FROM offices WHERE id = ?', [$u['office_id']]) : null,
         'requested_role' => $u['requested_role'],
+        'advice_type' => $u['advice_type'],
+        'advice_label' => isset(CRM_ADVICE_TYPES[$u['advice_type']]) ? CRM_ADVICE_TYPES[$u['advice_type']] : $u['advice_type'],
         'request_note' => $u['request_note'],
         'locked' => $u['locked_until'] && $u['locked_until'] > crm_now(),
         'failed_attempts' => (int) $u['failed_attempts'],
@@ -30,7 +32,7 @@ function crm_action_admin_users()
 /** Checks a role/office pair for a staff login. */
 function crm_admin_check_role_office($role, $officeId)
 {
-    if (!isset(CRM_ROLES[$role])) {
+    if (!isset(CRM_ROLES[$role]) || $role === 'admin') {
         crm_fail(400, 'invalid', 'Please choose a role.', 'role');
     }
     if (in_array($role, CRM_OFFICE_ROLES, true) && !crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$officeId])) {
@@ -38,20 +40,29 @@ function crm_admin_check_role_office($role, $officeId)
     }
 }
 
-/** Never lock everyone out: at least one active system admin must remain. */
+/** Never lock everyone out: at least one active admin login must remain. */
 function crm_admin_guard_last_admin($userId, $newRole, $newStatus)
 {
     $u = crm_one('SELECT role, status FROM users WHERE id = ?', [$userId]);
-    if (!$u || $u['role'] !== 'admin' || $u['status'] !== 'active') {
+    if (!$u || $u['role'] !== 'webadmin' || $u['status'] !== 'active') {
         return;
     }
-    if ($newRole === 'admin' && $newStatus === 'active') {
+    if ($newRole === 'webadmin' && $newStatus === 'active') {
         return;
     }
-    $others = (int) crm_val("SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?", [$userId]);
+    $others = (int) crm_val("SELECT COUNT(*) FROM users WHERE role = 'webadmin' AND status = 'active' AND id <> ?", [$userId]);
     if ($others === 0) {
-        crm_fail(409, 'last_admin', 'This is the only system admin login. Make another login a system admin first.');
+        crm_fail(409, 'last_admin', 'This is the only admin login. Make another login an admin first.');
     }
+}
+
+function crm_admin_advice($default = 'mortgage_protection')
+{
+    $a = crm_in_str('advice_type', 30, $default);
+    if (!isset(CRM_ADVICE_TYPES[$a])) {
+        crm_fail(400, 'invalid', 'Choose "Mortgage & protection" or "Protection only".', 'advice_type');
+    }
+    return $a;
 }
 
 /** POST adminUserSave: { id?, full_name, email, username, role, office_id, status } */
@@ -65,6 +76,7 @@ function crm_action_admin_user_save()
     $role = crm_in_str('role', 20);
     $officeId = crm_in_int('office_id') ?: null;
     $status = crm_in_str('status', 20, 'active');
+    $advice = crm_admin_advice();
     if (mb_strlen($fullName) < 2) {
         crm_fail(400, 'invalid', 'Please enter the person\'s full name.', 'full_name');
     }
@@ -102,13 +114,13 @@ function crm_action_admin_user_save()
         if ($existing['status'] === 'pending') {
             crm_fail(409, 'pending', 'Approve or reject this request first.');
         }
-        crm_q('UPDATE users SET full_name = ?, email = ?, username = ?, role = ?, office_id = ?, status = ?, updated_at = ? WHERE id = ?',
-            [$fullName, $email === '' ? null : $email, $username, $role, $officeId, $status, $now, $id]);
+        crm_q('UPDATE users SET full_name = ?, email = ?, username = ?, role = ?, office_id = ?, status = ?, advice_type = ?, updated_at = ? WHERE id = ?',
+            [$fullName, $email === '' ? null : $email, $username, $role, $officeId, $status, $advice, $now, $id]);
         if ($status !== 'active') {
             crm_q('DELETE FROM sessions WHERE user_id = ?', [$id]);
         }
         $changes = [];
-        foreach (['full_name' => $fullName, 'email' => $email ?: null, 'username' => $username, 'role' => $role, 'office_id' => $officeId, 'status' => $status] as $k => $v) {
+        foreach (['full_name' => $fullName, 'email' => $email ?: null, 'username' => $username, 'role' => $role, 'office_id' => $officeId, 'status' => $status, 'advice_type' => $advice] as $k => $v) {
             if ((string) $existing[$k] !== (string) $v) {
                 $changes[$k] = [$existing[$k], $v];
             }
@@ -119,7 +131,7 @@ function crm_action_admin_user_save()
     $temp = crm_random_password();
     $newId = crm_insert('users', [
         'username' => $username, 'email' => $email, 'full_name' => $fullName, 'password_hash' => password_hash($temp, PASSWORD_DEFAULT),
-        'role' => $role, 'office_id' => $officeId, 'status' => 'active', 'must_change_password' => 1,
+        'role' => $role, 'office_id' => $officeId, 'status' => 'active', 'must_change_password' => 1, 'advice_type' => $advice,
         'decided_by' => $me['id'], 'decided_at' => $now, 'password_changed_at' => $now, 'created_at' => $now, 'updated_at' => $now,
     ]);
     crm_audit('user_create', 'users', $newId, 'Created a ' . CRM_ROLES[$role] . ' login for ' . $fullName, null, $officeId);
@@ -137,10 +149,11 @@ function crm_action_admin_user_approve()
     }
     $role = crm_in_str('role', 20, $u['role']);
     $officeId = crm_in_int('office_id') ?: ($u['office_id'] ? (int) $u['office_id'] : null);
+    $advice = crm_admin_advice($u['advice_type']);
     crm_admin_check_role_office($role, $officeId);
-    crm_q("UPDATE users SET status = 'active', role = ?, office_id = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?",
-        [$role, $officeId, $me['id'], crm_now(), crm_now(), $id]);
-    crm_audit('user_approve', 'users', $id, 'Approved ' . CRM_ROLES[$role] . ' login for ' . $u['full_name'] . ' (' . $u['email'] . ')', null, $officeId);
+    crm_q("UPDATE users SET status = 'active', role = ?, office_id = ?, advice_type = ?, decided_by = ?, decided_at = ?, updated_at = ? WHERE id = ?",
+        [$role, $officeId, $advice, $me['id'], crm_now(), crm_now(), $id]);
+    crm_audit('user_approve', 'users', $id, 'Approved ' . CRM_ROLES[$role] . ' login (' . CRM_ADVICE_TYPES[$advice] . ') for ' . $u['full_name'] . ' (' . $u['email'] . ')', null, $officeId);
     crm_ok();
 }
 
@@ -219,8 +232,8 @@ function crm_action_admin_office_save()
         }
         crm_q('UPDATE offices SET name = ?, address = ?, phone = ?, active = ? WHERE id = ?', [$name, $address ?: null, $phone ?: null, $active, $id]);
         if (!$active) {
-            // Staff of a closed office are signed out; they can't work until Newcastle moves their login.
-            crm_q("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE office_id = ? AND role <> 'admin')", [$id]);
+            // Staff of a closed office are signed out; they can't work until the admin moves their login.
+            crm_q("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE office_id = ? AND role <> 'webadmin')", [$id]);
         }
         crm_audit('office_update', 'offices', $id, 'Updated office ' . $name, null, $id);
     } else {
@@ -233,7 +246,6 @@ function crm_action_admin_office_save()
 function crm_action_admin_settings()
 {
     crm_ok([
-        'require_approval' => crm_setting('require_approval', '1') === '1',
         'team_threshold' => (int) crm_setting('team_threshold', '30'),
         'quiet_days' => (int) crm_setting('quiet_days', '14'),
         'domain' => CRM_ALLOWED_DOMAIN,
@@ -244,7 +256,7 @@ function crm_action_admin_settings()
     ]);
 }
 
-/** POST adminSettingsSave: { require_approval, team_threshold, quiet_days } */
+/** POST adminSettingsSave: { team_threshold, quiet_days } */
 function crm_action_admin_settings_save()
 {
     $t = crm_in_int('team_threshold', 30);
@@ -255,7 +267,6 @@ function crm_action_admin_settings_save()
     if ($q < 3 || $q > 90) {
         crm_fail(400, 'invalid', 'Use a number of days between 3 and 90.', 'quiet_days');
     }
-    crm_set_setting('require_approval', crm_in('require_approval') === false ? '0' : '1');
     crm_set_setting('team_threshold', $t);
     crm_set_setting('quiet_days', $q);
     crm_audit('settings', 'settings', null, 'Changed CRM settings');
@@ -270,6 +281,20 @@ function crm_action_admin_recovery_new()
     crm_q("DELETE FROM settings WHERE key = 'recovery_pending'");
     crm_audit('recovery_new', 'settings', null, 'Made a new recovery code');
     crm_ok(['code' => $code]);
+}
+
+/** GET adminBackupAll: a JSON copy of every office (no password hashes). */
+function crm_action_admin_backup_all()
+{
+    $out = ['app' => 'map-crm', 'exported_at' => crm_now(), 'exported_by' => crm_user()['full_name'], 'scope' => 'all offices'];
+    $out['offices'] = crm_all('SELECT * FROM offices');
+    $out['users'] = crm_all('SELECT id, username, email, full_name, role, advice_type, office_id, status, last_login_at, created_at FROM users');
+    foreach (['leads', 'clients', 'cases', 'policies', 'activities', 'tasks', 'documents', 'introducers', 'opportunities', 'templates', 'events', 'event_contacts', 'sales_calls'] as $t) {
+        $out[$t] = crm_all("SELECT * FROM $t");
+    }
+    $out['audit_log'] = crm_all('SELECT * FROM audit_log ORDER BY id');
+    crm_audit('backup', null, null, 'Downloaded a backup of every office', null, null);
+    crm_download('map-crm-backup-all-offices-' . date('Y-m-d-His') . '.json', 'application/json', json_encode($out, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE));
 }
 
 /** GET adminDatabase: downloads a consistent copy of the whole SQLite database. */

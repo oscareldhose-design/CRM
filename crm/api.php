@@ -9,11 +9,11 @@
  * - Everything is stored in the "data" folder next to this file. It is created automatically and
  *   web access to it is blocked. Download backups from the app (Tools -> Import, export & backups).
  * - On first run four logins are created, all with the password in CRM_SEED_PASSWORD (config.php):
- *   the office logins newcastle, nottingham and london, and admin for the website admin panel.
- *   Newcastle is the CRM's system administrator: it approves new accounts and holds the recovery
- *   code. Change these passwords once you are in.
+ *   the office logins newcastle, nottingham and london (one for each whole office), and admin, which
+ *   opens the website admin panel. The admin login also manages every CRM login (approving requests,
+ *   resets, offices) and holds the recovery code. Change these passwords once you are in.
  * - Staff request their own login from the sign-in page. Only @themaap.co.uk email addresses are
- *   accepted, and (by default) Newcastle must approve each request before it can be used.
+ *   accepted; info@themaap.co.uk is emailed, and the admin login approves each request.
  *
  * Settings are in config.php.
  *
@@ -52,7 +52,7 @@ $routes = [
     'recover'        => ['POST', 'crm_action_recover',       'public'],
     'logout'         => ['POST', 'crm_action_logout',        'user'],
     'changePassword' => ['POST', 'crm_action_change_password', 'user'],
-    'ackRecovery'    => ['POST', 'crm_action_ack_recovery',  'admin'],
+    'ackRecovery'    => ['POST', 'crm_action_ack_recovery',  'webadmin'],
     'switchOffice'   => ['POST', 'crm_action_switch_office', 'admin'],
     'meta'           => ['GET',  'crm_action_meta',          'user'],
 
@@ -112,19 +112,20 @@ $routes = [
     'salesHandover'  => ['POST', 'crm_action_sales_handover', 'sales'],
     'salesResults'   => ['GET',  'crm_action_sales_results', 'sales'],
 
-    // System admin (Newcastle)
-    'adminUsers'     => ['GET',  'crm_action_admin_users',   'admin'],
-    'adminUserSave'  => ['POST', 'crm_action_admin_user_save', 'admin'],
-    'adminUserApprove' => ['POST', 'crm_action_admin_user_approve', 'admin'],
-    'adminUserReject'  => ['POST', 'crm_action_admin_user_reject', 'admin'],
-    'adminUserReset'   => ['POST', 'crm_action_admin_user_reset', 'admin'],
-    'adminUserUnlock'  => ['POST', 'crm_action_admin_user_unlock', 'admin'],
-    'adminOffices'   => ['GET',  'crm_action_admin_offices', 'admin'],
-    'adminOfficeSave'=> ['POST', 'crm_action_admin_office_save', 'admin'],
-    'adminSettings'  => ['GET',  'crm_action_admin_settings', 'admin'],
-    'adminSettingsSave' => ['POST', 'crm_action_admin_settings_save', 'admin'],
-    'adminRecoveryNew' => ['POST', 'crm_action_admin_recovery_new', 'admin'],
-    'adminDatabase'  => ['GET',  'crm_action_admin_database', 'admin'],
+    // Logins, offices and system settings (the admin login, from the website admin panel)
+    'adminUsers'     => ['GET',  'crm_action_admin_users',   'webadmin'],
+    'adminUserSave'  => ['POST', 'crm_action_admin_user_save', 'webadmin'],
+    'adminUserApprove' => ['POST', 'crm_action_admin_user_approve', 'webadmin'],
+    'adminUserReject'  => ['POST', 'crm_action_admin_user_reject', 'webadmin'],
+    'adminUserReset'   => ['POST', 'crm_action_admin_user_reset', 'webadmin'],
+    'adminUserUnlock'  => ['POST', 'crm_action_admin_user_unlock', 'webadmin'],
+    'adminOffices'   => ['GET',  'crm_action_admin_offices', 'webadmin'],
+    'adminOfficeSave'=> ['POST', 'crm_action_admin_office_save', 'webadmin'],
+    'adminSettings'  => ['GET',  'crm_action_admin_settings', 'webadmin'],
+    'adminSettingsSave' => ['POST', 'crm_action_admin_settings_save', 'webadmin'],
+    'adminRecoveryNew' => ['POST', 'crm_action_admin_recovery_new', 'webadmin'],
+    'adminDatabase'  => ['GET',  'crm_action_admin_database', 'webadmin'],
+    'adminBackupAll' => ['GET',  'crm_action_admin_backup_all', 'webadmin'],
 ];
 
 crm_dispatch($routes);

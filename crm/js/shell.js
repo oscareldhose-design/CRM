@@ -6,6 +6,15 @@ const isOffice = () => S.me && OFFICE_ROLES.includes(S.me.role);
 const isManager = () => S.me && ['admin', 'manager'].includes(S.me.role);
 const isAdmin = () => S.me && S.me.role === 'admin';
 const canSales = () => S.me && ['sales', 'manager', 'admin'].includes(S.me.role);
+/** Protection-only advisers see nothing to do with mortgages. */
+const isProtectionOnly = () => !!(S.me && S.me.protection_only);
+const PROTECTION_ENQUIRIES = ['protection', 'insurance', 'business_protection', 'other'];
+const MORTGAGE_LEAD_FIELDS = ['loan_amount', 'property_value', 'deposit'];
+function leadFields() {
+  if (!isProtectionOnly()) return FIELDS.leads;
+  return FIELDS.leads.filter((f) => !MORTGAGE_LEAD_FIELDS.includes(f.k)).map((f) => (f.k === 'enquiry_type'
+    ? Object.assign({}, f, { opts: enumOptions('enquiry_type').filter(([k]) => PROTECTION_ENQUIRIES.includes(k)) }) : f));
+}
 
 /* ---------- Record forms (shared by lists, detail pages and quick add) ---------- */
 const FIELDS = {
@@ -80,7 +89,7 @@ const FIELDS = {
   tasks: [
     { k: 'title', label: 'What needs doing', req: true, full: true },
     { k: 'due_date', label: 'Due', type: 'date' }, { k: 'priority', label: 'Priority', type: 'select', opts: 'task_priority', default: 'normal' },
-    { k: 'assigned_to', label: 'Assigned to', type: 'user' }, { k: 'status', label: 'Status', type: 'select', opts: 'task_status', default: 'open' },
+    { k: 'assigned_to', label: 'Assigned to', type: 'user', allowOffice: true }, { k: 'status', label: 'Status', type: 'select', opts: 'task_status', default: 'open' },
     { k: 'notes', label: 'Notes', type: 'textarea' },
   ],
   documents: [
@@ -109,7 +118,7 @@ async function clientOptions() {
   return res.rows.map((c) => [c.id, `${fullName(c)}${c.postcode ? ' · ' + c.postcode : ''}`]);
 }
 async function newLead(defaults = {}) {
-  editRecord({ entity: 'leads', fields: FIELDS.leads, title: 'New lead', sub: 'Leads are scored HOT, WARM or COLD automatically, and a "contact lead" task is created for the adviser.',
+  editRecord({ entity: 'leads', fields: leadFields(), title: 'New lead', sub: 'Leads are scored HOT, WARM or COLD automatically, and a "contact lead" task is created for the adviser.',
     defaults: Object.assign({ adviser_id: S.me.role === 'adviser' ? S.me.id : '' }, defaults), onSaved: (r) => { location.hash = `#/leads/${r.id}`; } });
 }
 async function newClient(defaults = {}) {
@@ -150,16 +159,20 @@ function navGroups() {
   const groups = [];
   if (isOffice()) {
     groups.push({ label: 'Overview', items: [['dashboard', 'Dashboard', 'dashboard']] });
-    groups.push({ label: 'Clients & cases', items: [['leads', 'Leads', 'lead'], ['clients', 'Clients', 'users'], ['pipeline', 'Mortgage pipeline', 'pipeline'], ['protection', 'Protection & insurance', 'shield']] });
-    groups.push({ label: 'Future business', items: [['radar', 'Remortgage radar', 'radar'], ['opportunities', 'Opportunities', 'spark']] });
-    groups.push({ label: 'Case work', items: [['compliance', 'Compliance', 'check-circle'], ['documents', 'Documents', 'file'], ['tasks', 'Tasks & calendar', 'calendar']] });
+    if (isProtectionOnly()) {
+      groups.push({ label: 'Clients & cover', items: [['leads', 'Leads', 'lead'], ['clients', 'Clients', 'users'], ['protection', 'Protection & insurance', 'shield']] });
+      groups.push({ label: 'Future business', items: [['opportunities', 'Opportunities', 'spark'], ['tasks', 'Tasks & calendar', 'calendar']] });
+    } else {
+      groups.push({ label: 'Clients & cases', items: [['leads', 'Leads', 'lead'], ['clients', 'Clients', 'users'], ['pipeline', 'Mortgage pipeline', 'pipeline'], ['protection', 'Protection & insurance', 'shield']] });
+      groups.push({ label: 'Future business', items: [['radar', 'Remortgage radar', 'radar'], ['opportunities', 'Opportunities', 'spark']] });
+      groups.push({ label: 'Case work', items: [['compliance', 'Compliance', 'check-circle'], ['documents', 'Documents', 'file'], ['tasks', 'Tasks & calendar', 'calendar']] });
+    }
     groups.push({ label: 'Business', items: [['introducers', 'Introducers', 'handshake'], ['team', 'Team & workload', 'team'], ['reports', 'Reports', 'chart']] });
-    const tools = [['templates', 'Email templates', 'mail'], ['lost', 'Lost cases', 'x-circle'], ['data', 'Import, export & backups', 'database'], ['trash', 'Trash', 'trash']];
+    const tools = [['templates', 'Email templates', 'mail'], ['lost', isProtectionOnly() ? 'Lost leads' : 'Lost cases', 'x-circle'], ['data', 'Import, export & backups', 'database'], ['trash', 'Trash', 'trash']];
     if (isManager()) tools.splice(2, 0, ['audit', 'Audit log', 'history']);
     groups.push({ label: 'Tools', items: tools });
   }
   if (canSales()) groups.push({ label: 'General Sales', items: [['sales', 'Events', 'megaphone'], ['sales/queue', 'Call queue', 'phone'], ['sales/results', 'Event results', 'trophy']] });
-  if (r === 'admin') groups.push({ label: 'System admin', items: [['admin', 'Logins & offices', 'settings']] });
   return groups;
 }
 function renderShell() {
@@ -173,8 +186,8 @@ function renderShell() {
       <a class="brand" href="#/${me.role === 'sales' ? 'sales' : 'dashboard'}" aria-label="MAP: go to the start page"><img src="assets/map-logo.svg" alt="MAP" width="56" height="60"></a>
       ${officeChip}
       <nav class="nav" id="nav">${navGroups().map((g) => h`<div class="nav-group"><div class="nav-label">${g.label}</div>
-        ${g.items.map(([path, text, ic]) => h`<a href="#/${path}" data-nav="${path}">${icon(ic)}<span>${text}</span>${path === 'admin' ? raw('<span class="count" data-pending hidden></span>') : ''}</a>`)}</div>`)}</nav>
-      <div class="side-foot"><div class="avatar">${initials(me.full_name)}</div><div class="who"><b>${me.full_name}</b><span>${me.role_label}</span></div>
+        ${g.items.map(([path, text, ic]) => h`<a href="#/${path}" data-nav="${path}">${icon(ic)}<span>${text}</span></a>`)}</div>`)}</nav>
+      <div class="side-foot"><div class="avatar">${initials(me.full_name)}</div><div class="who"><b>${me.full_name}</b><span>${me.is_office_account ? 'Office login' : me.role_label}</span></div>
         <a class="icon-btn" href="#/account" aria-label="My account" title="My account">${icon('user')}</a>
         <button class="icon-btn" type="button" data-signout aria-label="Sign out" title="Sign out">${icon('logout')}</button></div>
     </aside>
@@ -183,10 +196,10 @@ function renderShell() {
       <header class="topbar">
         <button class="icon-btn menu-btn" type="button" data-open-nav aria-label="Open menu">${icon('menu')}</button>
         <div class="page-title" id="pageTitle"></div>
-        ${isOffice() ? h`<div class="search-pill" role="search"><input id="globalSearch" type="search" placeholder="Search clients, leads, cases…  ( / )" autocomplete="off" aria-label="Search">
+        ${isOffice() ? h`<div class="search-pill" role="search"><input id="globalSearch" type="search" placeholder="${isProtectionOnly() ? 'Search clients, leads, policies…' : 'Search clients, leads, cases…'}  ( / )" autocomplete="off" aria-label="Search">
           <button class="go" type="button" data-focus-search aria-label="Search">${icon('search', 'ic-sm')}</button><div class="search-results hidden" id="searchResults"></div></div>` : raw('<div class="grow"></div>')}
         <div class="top-actions">
-          ${isOffice() ? h`<button class="icon-btn hide-sm" type="button" data-lookup title="Quick Case Lookup (all offices)" aria-label="Quick Case Lookup">${icon('globe')}</button>` : ''}
+          ${isOffice() && !isProtectionOnly() ? h`<button class="icon-btn hide-sm" type="button" data-lookup title="Quick Case Lookup (all offices)" aria-label="Quick Case Lookup">${icon('globe')}</button>` : ''}
           <div style="position:relative"><button class="icon-btn" type="button" data-bell aria-label="Notifications" title="Notifications">${icon('bell')}<span class="dot hidden" id="bellDot"></span></button><div id="bellPop"></div></div>
           <button class="icon-btn" type="button" data-toggle-theme aria-label="Light or dark mode" title="Light or dark mode"><span data-theme-icon>${icon(getTheme() === 'dark' ? 'sun' : 'moon')}</span></button>
         </div>
@@ -277,9 +290,6 @@ async function pollNotifications() {
     S.notifications = res;
     const dot = $('#bellDot');
     if (dot) { dot.textContent = res.unread > 9 ? '9+' : res.unread; dot.classList.toggle('hidden', !res.unread); }
-    const pending = res.items.filter((i) => i.kind === 'request').length;
-    const p = $('[data-pending]');
-    if (p) { p.textContent = pending; p.hidden = !pending; }
   } catch (e) { /* offline: try again next time */ }
 }
 function toggleBell() {
@@ -301,7 +311,7 @@ function toggleFab() {
   const m = $('#fabMenu');
   if (m.innerHTML) { setHTML(m, ''); return; }
   const items = isOffice()
-    ? [['lead', 'New lead', 'lead'], ['client', 'New client', 'user'], ['case', 'New mortgage case', 'home'], ['policy', 'New policy', 'shield'], ['task', 'New task', 'calendar'], ['log', 'Log a call or note', 'phone']]
+    ? [['lead', 'New lead', 'lead'], ['client', 'New client', 'user'], ...(isProtectionOnly() ? [] : [['case', 'New mortgage case', 'home']]), ['policy', 'New policy', 'shield'], ['task', 'New task', 'calendar'], ['log', 'Log a call or note', 'phone']]
     : [['event', 'New event', 'megaphone'], ['queue', 'Open the call queue', 'phone']];
   setHTML(m, h`<div class="fab-menu" role="menu">${items.map(([k, t, ic]) => h`<button type="button" role="menuitem" data-quick="${k}">${icon(ic)}${t}</button>`)}</div>`);
   on(m, 'click', '[data-quick]', (e, b) => {
@@ -371,15 +381,15 @@ function openLookup() {
 /* ---------- Router ---------- */
 const ROUTES = [
   ['dashboard', 'viewDashboard', 'office'], ['leads', 'viewLeads', 'office'], ['leads/:id', 'viewLead', 'office'],
-  ['clients', 'viewClients', 'office'], ['clients/:id', 'viewClient', 'office'], ['cases/:id', 'viewCase', 'office'],
-  ['pipeline', 'viewPipeline', 'office'], ['protection', 'viewProtection', 'office'], ['policies/:id', 'viewPolicy', 'office'],
-  ['radar', 'viewRadar', 'office'], ['opportunities', 'viewOpportunities', 'office'], ['compliance', 'viewCompliance', 'office'],
-  ['documents', 'viewDocuments', 'office'], ['tasks', 'viewTasks', 'office'], ['tasks/:id', 'viewTaskRoute', 'office'],
+  ['clients', 'viewClients', 'office'], ['clients/:id', 'viewClient', 'office'], ['cases/:id', 'viewCase', 'mortgage'],
+  ['pipeline', 'viewPipeline', 'mortgage'], ['protection', 'viewProtection', 'office'], ['policies/:id', 'viewPolicy', 'office'],
+  ['radar', 'viewRadar', 'mortgage'], ['opportunities', 'viewOpportunities', 'office'], ['compliance', 'viewCompliance', 'mortgage'],
+  ['documents', 'viewDocuments', 'mortgage'], ['tasks', 'viewTasks', 'office'], ['tasks/:id', 'viewTaskRoute', 'office'],
   ['introducers', 'viewIntroducers', 'office'], ['introducers/:id', 'viewIntroducer', 'office'], ['team', 'viewTeam', 'office'],
   ['reports', 'viewReports', 'office'], ['templates', 'viewTemplates', 'office'], ['lost', 'viewLost', 'office'],
   ['audit', 'viewAudit', 'manager'], ['trash', 'viewTrash', 'office'], ['data', 'viewData', 'office'],
   ['sales', 'viewSales', 'sales'], ['sales/events/:id', 'viewSalesEvent', 'sales'], ['sales/queue', 'viewSalesQueue', 'sales'],
-  ['sales/results', 'viewSalesResults', 'sales'], ['admin', 'viewAdmin', 'admin'], ['account', 'viewAccount', 'user'],
+  ['sales/results', 'viewSalesResults', 'sales'], ['account', 'viewAccount', 'user'],
 ];
 function parseHash() {
   const raw_ = location.hash.replace(/^#\/?/, '');
@@ -403,7 +413,8 @@ async function router() {
     const p = {};
     if (pp.every((seg, i) => (seg.startsWith(':') ? ((p[seg.slice(1)] = decodeURIComponent(hp[i])), true) : seg === hp[i]))) { match = [fn, access]; params = p; break; }
   }
-  const allowed = (access) => access === 'user' || (access === 'office' && isOffice()) || (access === 'manager' && isManager()) || (access === 'admin' && isAdmin()) || (access === 'sales' && canSales());
+  const allowed = (access) => access === 'user' || (access === 'office' && isOffice()) || (access === 'mortgage' && isOffice() && !isProtectionOnly())
+    || (access === 'manager' && isManager()) || (access === 'sales' && canSales());
   if (!match || !allowed(match[1])) {
     location.hash = '#/' + (isOffice() ? 'dashboard' : 'sales');
     return;

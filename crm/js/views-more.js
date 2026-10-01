@@ -38,14 +38,14 @@ async function viewRadar({ el, stale }) {
 /* ---------- Opportunities ---------- */
 async function viewOpportunities({ el, query }) {
   const state = { status: query.get('status') || 'open', type: query.get('type') || '' };
-  setHTML(el, h`${pageHead({ title: 'Opportunities', sub: 'Clients without protection, landlords without cover, buyers without home insurance, reviews due and remortgages: spotted automatically.' })}
+  setHTML(el, h`${pageHead({ title: 'Opportunities', sub: isProtectionOnly() ? 'Clients without protection, landlords without cover, buyers without home insurance and reviews due: spotted automatically.' : 'Clients without protection, landlords without cover, buyers without home insurance, reviews due and remortgages: spotted automatically.' })}
   <div class="filters">${segmented('status', [['open', 'Open'], ['actioned', 'Actioned'], ['dismissed', 'Dismissed'], ['all', 'All']], state.status)}<div data-types></div></div>
   <div data-list>${loadingBlock()}</div>`);
   const typeIcon = { remortgage: 'radar', protection_gap: 'shield', landlord_cover: 'building', home_insurance: 'home', review_due: 'calendar', other: 'spark' };
   const load = async () => {
     setQuery({ status: state.status === 'open' ? '' : state.status, type: state.type });
     const d = await apiGet('opportunities', { status: state.status, type: state.type });
-    setHTML($('[data-types]', el), segmented('type', [['', 'All types'], ...enumOptions('opportunity_type').map(([k, v]) => [k, `${v}${d.counts[k] ? ` (${d.counts[k]})` : ''}`])], state.type));
+    setHTML($('[data-types]', el), segmented('type', [['', 'All types'], ...enumOptions('opportunity_type').filter(([k]) => !(isProtectionOnly() && k === 'remortgage')).map(([k, v]) => [k, `${v}${d.counts[k] ? ` (${d.counts[k]})` : ''}`])], state.type));
     setHTML($('[data-list]', el), d.rows.length ? h`<div class="grid grid-2">${d.rows.map((o) => h`<div class="card card-pad">
       <div class="row" style="flex-wrap:nowrap;align-items:flex-start"><span class="reminder info" style="padding:0;border:0;background:none"><span class="r-icon">${icon(typeIcon[o.type] || 'spark')}</span></span>
         <div class="grow"><div class="row-between"><b>${o.title}</b><span class="badge ${o.status === 'open' ? 'badge-brand' : o.status === 'actioned' ? 'badge-ok' : ''}">${label('opportunity_type', o.type)}</span></div>
@@ -187,7 +187,7 @@ async function viewTasks({ el, query }) {
         <button class="icon-btn" type="button" data-month="${isoDay(nextM).slice(0, 7)}" aria-label="Next month">${icon('chevron-right')}</button>
         <button class="btn btn-ghost btn-sm" type="button" data-month="${today().slice(0, 7)}">Today</button>
         <label class="check"><input type="checkbox" data-mine ${state.mine ? raw('checked') : ''}><span>Mine only</span></label>
-        <span class="small muted">Overdue tasks show on today. Also shows completions, offer expiries, renewals, fixed-rate ends and reviews.</span></div>
+        <span class="small muted">Overdue tasks show on today. Also shows ${isProtectionOnly() ? 'renewals and reviews' : 'completions, offer expiries, renewals, fixed-rate ends and reviews'}.</span></div>
         <div class="cal">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => h`<div class="cal-dow">${d}</div>`)}
         ${days.map((d) => { const k = isoDay(d); const list = byDay[k] || []; return h`<div class="cal-day ${d.getMonth() !== m - 1 ? 'other' : ''} ${k === today() ? 'today' : ''}"><div class="cal-num">${d.getDate()}</div>
           ${list.slice(0, 4).map((it) => h`<a class="cal-ev k-${it.kind} ${it.overdue ? 'overdue' : ''}" href="${linkOf(it)}" title="${it.title}">${it.title}</a>`)}${list.length > 4 ? h`<div class="tiny muted">+${list.length - 4} more</div>` : ''}</div>`; })}</div>`);
@@ -216,8 +216,8 @@ async function viewIntroducers({ el, stale }) {
       { k: 'referrals', label: 'Referrals', right: true, value: (r) => r.referrals },
       { k: 'converted', label: 'Converted', right: true, value: (r) => r.converted },
       { k: 'conversion', label: 'Conversion', right: true, value: (r) => r.conversion, render: (r) => (r.conversion === null ? '—' : `${r.conversion}%`) },
-      { k: 'completed', label: 'Completions', right: true, value: (r) => r.completed },
-      { k: 'fees', label: 'Fees earned', right: true, value: (r) => r.fees, render: (r) => money(r.fees) },
+      ...(isProtectionOnly() ? [] : [{ k: 'completed', label: 'Completions', right: true, value: (r) => r.completed },
+        { k: 'fees', label: 'Fees earned', right: true, value: (r) => r.fees, render: (r) => money(r.fees) }]),
       { k: 'last_referral_at', label: 'Last referral', render: (r) => (r.last_referral_at ? relTime(r.last_referral_at) : '—'), exportValue: (r) => fmtDate(r.last_referral_at) },
     ],
   });
@@ -258,24 +258,28 @@ async function viewTeam({ el, stale }) {
     const [cls, txt] = statusTxt[u.status];
     return h`<div class="card person"><div class="row"><div class="avatar">${initials(u.full_name)}</div><div class="grow"><b>${u.full_name}</b><div class="small muted">${label('x', S.meta.roles[u.role] || u.role)}</div></div><span class="badge ${cls}">${txt}</span></div>
       <div class="load-meter"><div class="row-between small"><span class="muted">Workload</span><b>${u.load} pts</b></div><div class="progress mt-sm"><span class="${u.status}" style="width:${Math.min(100, (100 * u.load) / d.threshold)}%"></span></div></div>
-      <div class="mini-stats"><div><b>${u.active_cases}</b><span>Cases</span></div><div><b>${u.open_leads}</b><span>Leads</span></div><div><b>${u.open_tasks}</b><span>Tasks</span></div><div><b class="${u.overdue_tasks ? 'risk-high' : ''}">${u.overdue_tasks}</b><span>Overdue</span></div></div>
+      <div class="mini-stats">${isProtectionOnly() ? h`<div><b>${u.open_quotes}</b><span>Quotes</span></div>` : h`<div><b>${u.active_cases}</b><span>Cases</span></div>`}<div><b>${u.open_leads}</b><span>Leads</span></div><div><b>${u.open_tasks}</b><span>Tasks</span></div><div><b class="${u.overdue_tasks ? 'risk-high' : ''}">${u.overdue_tasks}</b><span>Overdue</span></div></div>
       <div class="row mt"><a class="btn btn-ghost btn-xs" href="#/tasks?mine=0">Tasks</a><span class="small muted">${u.due_week} due this week${u.last_login_at ? ` · last in ${relTime(u.last_login_at)}` : ''}</span></div></div>`;
   })}</div>${d.rows.length ? '' : h`<div class="card">${emptyState('team', 'No staff in this office yet', 'Staff appear here once their login is approved.')}</div>`}`);
 }
 
 /* ---------- Reports ---------- */
 async function viewReports({ el, query }) {
-  const state = { from: query.get('from') || `${today().slice(0, 4)}-01-01`, to: query.get('to') || today(), tab: query.get('tab') || 'pipeline' };
-  setHTML(el, h`${pageHead({ title: 'Reports', sub: 'Pipeline, revenue by adviser, cases that have gone quiet, lead sources and completions.' })}
+  const reportTabs = isProtectionOnly() ? [['revenue', 'Commission by adviser'], ['sources', 'Lead sources']]
+    : [['pipeline', 'Pipeline'], ['revenue', 'Revenue by adviser'], ['quiet', 'Gone quiet'], ['sources', 'Lead sources'], ['completions', 'Completions'], ['lost', 'Lost reasons']];
+  const firstTab = reportTabs[0][0];
+  const asked = query.get('tab');
+  const state = { from: query.get('from') || `${today().slice(0, 4)}-01-01`, to: query.get('to') || today(), tab: reportTabs.some(([k]) => k === asked) ? asked : firstTab };
+  setHTML(el, h`${pageHead({ title: 'Reports', sub: isProtectionOnly() ? 'Protection commission by adviser and where your leads come from.' : 'Pipeline, revenue by adviser, cases that have gone quiet, lead sources and completions.' })}
   <div class="filters"><div class="field"><label for="rp-from">From</label><input class="input" type="date" id="rp-from" value="${state.from}"></div>
     <div class="field"><label for="rp-to">To</label><input class="input" type="date" id="rp-to" value="${state.to}"></div>
     <div class="field"><span class="label">Quick ranges</span>${segmented('range', [['month', 'This month'], ['year', 'This year'], ['12m', 'Last 12 months']], '')}</div></div>
-  <div class="tabs" role="tablist">${[['pipeline', 'Pipeline'], ['revenue', 'Revenue by adviser'], ['quiet', 'Gone quiet'], ['sources', 'Lead sources'], ['completions', 'Completions'], ['lost', 'Lost reasons']]
+  <div class="tabs" role="tablist">${reportTabs
     .map(([k, t]) => h`<button role="tab" type="button" data-tab="${k}" aria-selected="${k === state.tab}">${t}</button>`)}</div><div data-body>${loadingBlock()}</div>`);
   const body = $('[data-body]', el);
   let d;
   const draw = () => {
-    setQuery({ from: state.from, to: state.to, tab: state.tab === 'pipeline' ? '' : state.tab });
+    setQuery({ from: state.from, to: state.to, tab: state.tab === firstTab ? '' : state.tab });
     const t = state.tab;
     if (t === 'pipeline') {
       const rows = d.pipeline;
@@ -285,8 +289,17 @@ async function viewReports({ el, query }) {
         { k: 'loan', label: 'Lending', right: true, render: (r) => money(r.loan) }, { k: 'fees', label: 'Fees due', right: true, render: (r) => money(r.fees) },
         { k: 'high', label: 'High risk', right: true }] });
     } else if (t === 'revenue') {
-      const rows = d.revenue.map((r) => Object.assign({ name: r.adviser_id ? userName(r.adviser_id) || 'Former staff' : 'No adviser' }, r));
+      const prot = isProtectionOnly();
+      const rows = d.revenue.map((r) => Object.assign({ name: r.adviser_id ? userName(r.adviser_id) || 'Former staff' : 'No adviser' }, r, prot ? { total: r.commission } : {}))
+        .filter((r) => !prot || r.policies > 0);
       const total = rows.reduce((s, r) => s + r.total, 0);
+      if (prot) {
+        setHTML(body, h`<div class="kpis">${kpi('Protection commission', money(total), `${fmtDate(d.from)} to ${fmtDate(d.to)}`, '#/reports?tab=revenue')}${kpi('Policies started', num(rows.reduce((s, r) => s + r.policies, 0)), 'went on risk in this period', '#/protection?status=on_risk')}</div>
+          <div class="grid grid-2"><section class="card"><div class="card-head"><h2>Commission by adviser</h2></div><div class="card-body">${rows.length ? barsHtml(rows, { value: (r) => r.total, labelOf: (r) => r.name, fmt: moneyShort }) : emptyState('chart', 'No commission in this period', '')}</div></section><div data-t></div></div>`);
+        mountTable($('[data-t]', body), { rows, noun: 'adviser', exportName: 'MAP protection commission', sort: ['total', -1], columns: [
+          { k: 'name', label: 'Adviser' }, { k: 'policies', label: 'Policies started', right: true }, { k: 'total', label: 'Commission', right: true, render: (r) => h`<b>${money(r.total)}</b>` }] });
+        return;
+      }
       setHTML(body, h`<div class="kpis">${kpi('Total revenue', money(total), `${fmtDate(d.from)} to ${fmtDate(d.to)}`, '#/reports?tab=revenue')}${kpi('Completions', num(rows.reduce((s, r) => s + r.completions, 0)), moneyShort(rows.reduce((s, r) => s + r.lent, 0)) + ' lent', '#/reports?tab=completions')}</div>
         <div class="grid grid-2"><section class="card"><div class="card-head"><h2>Revenue by adviser</h2></div><div class="card-body">${rows.length ? barsHtml(rows, { value: (r) => r.total, labelOf: (r) => r.name, fmt: moneyShort }) : emptyState('chart', 'No revenue in this period', '')}</div></section><div data-t></div></div>`);
       mountTable($('[data-t]', body), { rows, noun: 'adviser', exportName: 'MAP revenue by adviser', sort: ['total', -1], columns: [
@@ -358,10 +371,11 @@ async function viewTemplates({ el, stale }) {
 async function viewLost({ el, query, stale }) {
   const d = await apiGet('lost');
   if (stale()) return;
-  const tab = query.get('tab') || 'cases';
+  const tab = isProtectionOnly() ? 'leads' : (query.get('tab') || 'cases');
   const reload = () => router();
-  setHTML(el, h`${pageHead({ title: 'Lost cases', sub: 'Cases and leads that did not go ahead, with the reason. Any of them can be reopened.' })}
-  <div class="tabs" role="tablist"><button role="tab" type="button" data-tab="cases" aria-selected="${tab === 'cases'}">Cases (${d.cases.length})</button><button role="tab" type="button" data-tab="leads" aria-selected="${tab === 'leads'}">Leads (${d.leads.length})</button></div><div data-t></div>`);
+  setHTML(el, h`${pageHead(isProtectionOnly() ? { title: 'Lost leads', sub: 'Leads that did not go ahead, with the reason. Any of them can be reopened.' }
+    : { title: 'Lost cases', sub: 'Cases and leads that did not go ahead, with the reason. Any of them can be reopened.' })}
+  ${isProtectionOnly() ? '' : h`<div class="tabs" role="tablist"><button role="tab" type="button" data-tab="cases" aria-selected="${tab === 'cases'}">Cases (${d.cases.length})</button><button role="tab" type="button" data-tab="leads" aria-selected="${tab === 'leads'}">Leads (${d.leads.length})</button></div>`}<div data-t></div>`);
   if (tab === 'cases') {
     mountTable($('[data-t]', el), { rows: d.cases, noun: 'case', exportName: 'MAP lost cases', rowHref: (c) => `#/cases/${c.id}`, empty: emptyState('check-circle', 'No lost cases', ''), columns: [
       { k: 'client_name', label: 'Client', render: (c) => h`<div class="t-title">${c.client_name}</div><div class="t-sub">${label('case_type', c.case_type)} · was at ${label('stage', c.stage_before_lost || c.stage)}</div>` },
@@ -383,7 +397,8 @@ async function viewAudit({ el }) {
   const state = { q: '', entity: '', user_id: '', all: false, rows: [], done: false };
   setHTML(el, h`${pageHead({ title: 'Audit log', sub: 'Full change history: who did what, and when. Every sign-in, change, deletion and download is recorded against the person who did it.' })}
   <div class="filters"><div class="search-pill"><input type="search" data-q placeholder="Search the log" aria-label="Search the audit log"><span class="go">${icon('search', 'ic-sm')}</span></div>
-    <select class="select" data-entity aria-label="Record type"><option value="">Everything</option>${[['leads', 'Leads'], ['clients', 'Clients'], ['cases', 'Cases'], ['policies', 'Policies'], ['tasks', 'Tasks'], ['documents', 'Documents'], ['users', 'Logins'], ['event_contacts', 'Event contacts'], ['events', 'Events']].map(([k, t]) => h`<option value="${k}">${t}</option>`)}</select>
+    <select class="select" data-entity aria-label="Record type"><option value="">Everything</option>${[['leads', 'Leads'], ['clients', 'Clients'], ['cases', 'Cases'], ['policies', 'Policies'], ['tasks', 'Tasks'], ['documents', 'Documents'], ['users', 'Logins'], ['event_contacts', 'Event contacts'], ['events', 'Events']]
+      .filter(([k]) => !(isProtectionOnly() && ['cases', 'documents'].includes(k))).map(([k, t]) => h`<option value="${k}">${t}</option>`)}</select>
     <select class="select" data-user aria-label="Person"><option value="">Everyone</option>${S.meta.users.map((u) => h`<option value="${u.id}">${u.full_name}</option>`)}</select>
     ${isAdmin() ? h`<label class="check"><input type="checkbox" data-all><span>All offices</span></label>` : ''}</div>
   <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>What</th>${isAdmin() ? h`<th>Office</th>` : ''}</tr></thead><tbody data-rows></tbody></table></div>
@@ -513,16 +528,15 @@ async function viewData({ el, query }) {
       <button class="btn btn-secondary" type="button" data-import="clients">${icon('users')}Import clients</button>
       <p class="small muted">Event sign-up lists go in through General Sales → Events, where consent is checked.</p></div></section>
     <section class="card"><div class="card-head"><div><h2>Export to Excel</h2><div class="sub">Everything in ${S.officeName}</div></div></div><div class="card-body"><div class="row">
-      ${[['leads', 'Leads'], ['clients', 'Clients'], ['cases', 'Cases'], ['policies', 'Policies'], ['tasks', 'Tasks'], ['introducers', 'Introducers']].map(([k, t]) => h`<button class="btn btn-ghost btn-sm" type="button" data-export="${k}">${icon('sheet', 'ic-sm')}${t}</button>`)}</div></div></section>
+      ${[['leads', 'Leads'], ['clients', 'Clients'], ['cases', 'Cases'], ['policies', 'Policies'], ['tasks', 'Tasks'], ['introducers', 'Introducers']].filter(([k]) => !(isProtectionOnly() && k === 'cases')).map(([k, t]) => h`<button class="btn btn-ghost btn-sm" type="button" data-export="${k}">${icon('sheet', 'ic-sm')}${t}</button>`)}</div></div></section>
     <section class="card"><div class="card-head"><div><h2>Backups</h2><div class="sub">A complete copy you can keep safe</div></div></div><div class="card-body stack-sm">
-      ${isManager() ? h`<a class="btn btn-primary" href="${apiUrl('backup')}">${icon('download')}Download ${S.officeName} backup (JSON)</a>` : h`<p class="muted">Office managers and Newcastle can download backups.</p>`}
-      ${isAdmin() ? h`<a class="btn btn-secondary" href="${apiUrl('backup', { scope: 'all' })}">${icon('download')}Backup of every office (JSON)</a><a class="btn btn-secondary" href="${apiUrl('adminDatabase')}">${icon('database')}Full database file (.sqlite)</a>` : ''}
+      ${isManager() ? h`<a class="btn btn-primary" href="${apiUrl('backup')}">${icon('download')}Download ${S.officeName} backup (JSON)</a>` : h`<p class="muted">The office logins (and office managers) can download the office's backup. Backups of every office are in the website admin panel.</p>`}
       <p class="small muted">Backups hold personal data. Store them securely and delete old copies you no longer need.</p></div></section>
   </div>`);
   on(el, 'click', '[data-import]', (e, b) => {
     const entity = b.dataset.import;
     importWizard({
-      title: `Import ${entity}`, fields: IMPORT_FIELDS[entity],
+      title: `Import ${entity}`, fields: IMPORT_FIELDS[entity].filter((f) => !(isProtectionOnly() && ['loan_amount', 'property_value', 'deposit'].includes(f.k))),
       extra: entity === 'leads' ? h`<label class="check"><input type="checkbox" data-tasks-opt><span>Create a "contact lead" task for each imported lead</span></label>` : '',
       onImport: (rows, m) => apiPost('importRows', { entity, rows, create_tasks: !!($('[data-tasks-opt]', m) && $('[data-tasks-opt]', m).checked) }),
     });
@@ -545,9 +559,10 @@ async function viewAccount({ el }) {
   const me = S.me;
   setHTML(el, h`${pageHead({ title: 'My account', sub: 'Your login and password.' })}
   <div class="grid grid-2"><section class="card"><div class="card-head"><h2>Your details</h2></div><div class="card-body">${kvHtml([
-    ['Name', me.full_name], ['Username', me.username], ['Email', me.email], ['Role', me.role_label], ['Office', S.officeName || (me.role === 'sales' ? 'General Sales' : '')],
+    ['Name', me.full_name], ['Username', me.username], ['Email', me.email], ['Role', me.is_office_account ? 'Office login' : me.role_label],
+    ['Advice', me.advice_type === 'protection' ? 'Protection only' : 'Mortgage & protection'], ['Office', S.officeName || (me.role === 'sales' ? 'General Sales' : '')],
     ['Last sign-in', fmtDateTime(me.last_login_at)]])}
-    <p class="small muted mt">To change your name, email, role or office, ask Newcastle.</p></div></section>
+    <p class="small muted mt">To change your name, email, role, office or advice type, ask the MAP admin.</p></div></section>
   <section class="card"><div class="card-head"><h2>Change password</h2></div><div class="card-body"><form class="stack" id="cpw" novalidate>
     ${passwordInput('cp-cur', 'current_password', 'Current password', 'current-password')}
     ${passwordInput('cp-new', 'new_password', 'New password', 'new-password')}

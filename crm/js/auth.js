@@ -147,10 +147,9 @@ function wireSignin(root, opts) {
 }
 
 function requestPanel() {
-  const offices = (S.status && S.status.offices) || [];
   const domain = (S.status && S.status.domain) || 'themaap.co.uk';
   return h`<h2>Request a login</h2>
-    <p class="sub">For MAP staff with a <b>@${domain}</b> email address.${S.status && S.status.require_approval ? ' Newcastle approves every request before it can be used.' : ''}</p>
+    <p class="sub">For MAP staff with a <b>@${domain}</b> email address. The MAP admin approves every request before it can be used.</p>
     <form class="auth-form" id="requestForm" novalidate>
       <div class="alert" data-auth-alert hidden></div>
       <div class="field"><label for="rq-name">Full name</label><div class="input-icon">${icon('user')}<input class="input" id="rq-name" name="full_name" autocomplete="name" required></div><div class="field-error" hidden></div></div>
@@ -159,17 +158,15 @@ function requestPanel() {
         <div class="field-hint">Only @${domain} addresses can request an account.</div><div class="field-error" hidden></div></div>
       <div class="field"><label for="rq-user">Choose a username</label><div class="input-icon">${icon('key')}<input class="input" id="rq-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
         <div class="field-hint">You'll sign in with this. Letters, numbers, dots or dashes.</div><div class="field-error" hidden></div></div>
-      <div class="form-grid">
-        <div class="field"><label for="rq-office">Office</label><select class="select" id="rq-office" name="office_id" required><option value="">Choose…</option>${offices.map((o) => h`<option value="${o.id}">${o.name}</option>`)}</select><div class="field-error" hidden></div></div>
-        <div class="field"><label for="rq-role">Your role</label><select class="select" id="rq-role" name="role">
-          <option value="adviser">Adviser</option><option value="administrator">Administrator</option><option value="manager">Office manager</option><option value="sales">General Sales (events calling)</option></select><div class="field-error" hidden></div></div>
-      </div>
+      <fieldset class="field advice-choice"><legend class="label">What advice do you give?</legend>
+        <label class="choice"><input type="radio" name="advice_type" value="mortgage_protection" required><span><b>Mortgage & protection</b><small>Mortgages, protection and insurance</small></span></label>
+        <label class="choice"><input type="radio" name="advice_type" value="protection"><span><b>Protection only</b><small>Life, critical illness, income protection and insurance</small></span></label>
+        <div class="field-error" hidden></div></fieldset>
       ${passwordInput('rq-pass', 'password', 'Create a password', 'new-password')}
       <div class="pw-meter" data-score="0" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
       <div class="pw-rules"></div>
       ${passwordInput('rq-pass2', 'password2', 'Confirm password', 'new-password')}
       <div class="caps" hidden>${icon('alert', 'ic-sm')}Caps Lock is on</div>
-      <div class="field"><label for="rq-note">Note for Newcastle <span class="muted">(optional)</span></label><input class="input" id="rq-note" name="note" placeholder="e.g. New adviser starting Monday"></div>
       <button class="btn btn-primary btn-lg btn-block" type="submit">${icon('send')}Send request</button>
     </form>`;
 }
@@ -190,6 +187,11 @@ function wireRequest(root) {
   });
   const fieldErr = (name, msg) => {
     const el = form.querySelector(`[name="${name}"]`);
+    if (el.type === 'radio') {
+      const box = el.closest('fieldset').querySelector('.field-error');
+      box.textContent = msg; box.hidden = false; el.focus(); shakeCard();
+      return;
+    }
     el.setAttribute('aria-invalid', 'true');
     const box = el.closest('.field').querySelector('.field-error');
     if (box) { box.textContent = msg; box.hidden = false; }
@@ -204,7 +206,8 @@ function wireRequest(root) {
     if (local.includes('@')) return fieldErr('email', `Use your @${domain} email address.`);
     if (!/^[A-Za-z0-9._%+'-]+$/.test(local)) return fieldErr('email', 'Enter the first part of your MAP email address.');
     if (form.full_name.value.trim().length < 2) return fieldErr('full_name', 'Enter your full name.');
-    if (!form.office_id.value && form.role.value !== 'sales') return fieldErr('office_id', 'Choose your office.');
+    const advice = form.querySelector('[name="advice_type"]:checked');
+    if (!advice) return fieldErr('advice_type', 'Choose "Mortgage & protection" or "Protection only".');
     if (!pwRulesOk(form.password.value)) return fieldErr('password', 'Use at least 8 characters with upper and lower case letters and a number.');
     if (form.password.value !== form.password2.value) return fieldErr('password2', 'The two passwords do not match.');
     const btn = $('button[type=submit]', form);
@@ -212,7 +215,7 @@ function wireRequest(root) {
     try {
       const res = await apiPost('register', {
         full_name: form.full_name.value.trim(), email: `${local}@${domain}`, username: form.username.value.trim(),
-        password: form.password.value, office_id: form.office_id.value, role: form.role.value, note: form.note.value.trim(),
+        password: form.password.value, advice_type: advice.value,
       }, { quiet: true });
       setHTML(root, h`<div style="text-align:center"><div class="success-mark">${icon('check')}</div>
         <h2>${res.status === 'pending' ? 'Request sent' : 'Your login is ready'}</h2><p class="sub">${res.message}</p>
@@ -220,7 +223,7 @@ function wireRequest(root) {
       on(root, 'click', '[data-signin-as]', (ev, b) => showLogin({ tab: 'signin', username: b.dataset.signinAs }));
     } catch (err) {
       busy(btn, false);
-      const map = { full_name: 'full_name', email: 'email', username: 'username', password: 'password', office_id: 'office_id', role: 'role' };
+      const map = { full_name: 'full_name', email: 'email', username: 'username', password: 'password', advice_type: 'advice_type' };
       if (err.payload && map[err.payload.field]) fieldErr(map[err.payload.field], err.message);
       else { authAlert(root, err.message); shakeCard(); }
     }
@@ -230,12 +233,12 @@ function wireRequest(root) {
 function forgotPanel() {
   return h`<button type="button" class="back-link link-btn" data-go-signin>${icon('chevron-left', 'ic-sm')} Back to sign in</button>
     <h2>Forgotten your password?</h2>
-    <p class="sub">Ask <b>Newcastle</b> (the CRM's system admin) to reset it. They'll give you a temporary password, and you'll choose a new one the next time you sign in.</p>
-    <div class="alert alert-info mt">${icon('info')}<div class="alert-text">If your login is locked after too many wrong passwords, wait 15 minutes or ask Newcastle to unlock it.</div></div>
-    <details class="mt" id="recoverBox"><summary class="link-btn" style="cursor:pointer;margin-top:8px">Newcastle admin? Reset with the recovery code</summary>
+    <p class="sub">Ask the <b>MAP admin</b> to reset it. They'll give you a temporary password, and you'll choose a new one the next time you sign in.</p>
+    <div class="alert alert-info mt">${icon('info')}<div class="alert-text">If your login is locked after too many wrong passwords, wait 15 minutes or ask the MAP admin to unlock it.</div></div>
+    <details class="mt" id="recoverBox"><summary class="link-btn" style="cursor:pointer;margin-top:8px">The admin login? Reset it with the recovery code</summary>
       <form class="auth-form" id="recoverForm" novalidate>
         <div class="alert" data-auth-alert hidden></div>
-        <div class="field"><label for="rc-user">Admin username</label><div class="input-icon">${icon('user')}<input class="input" id="rc-user" name="username" value="newcastle" autocapitalize="none" required></div></div>
+        <div class="field"><label for="rc-user">Admin username</label><div class="input-icon">${icon('user')}<input class="input" id="rc-user" name="username" value="admin" autocapitalize="none" required></div></div>
         <div class="field"><label for="rc-code">Recovery code</label><div class="input-icon">${icon('key')}<input class="input" id="rc-code" name="code" placeholder="MAP-XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" autocomplete="off" required></div></div>
         ${passwordInput('rc-pass', 'new_password', 'New password', 'new-password')}
         <div class="pw-meter" data-score="0" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
@@ -302,23 +305,6 @@ function showForcedPasswordChange() {
   });
 }
 
-/* ---------- Recovery code (shown once to Newcastle) ---------- */
-function showRecoveryCode(code) {
-  modal({
-    title: 'Your recovery code', dismissable: false,
-    sub: 'Newcastle holds this code. It resets the system admin password if it is ever forgotten.',
-    body: h`<div class="code-box">${code}</div>
-      <div class="alert alert-warn mt">${icon('alert')}<div class="alert-text">Write it down and keep it somewhere safe, away from this computer. It will <b>not</b> be shown again. You can make a new one in Admin → Security.</div></div>`,
-    foot: h`<button class="btn btn-secondary" type="button" data-copy>${icon('copy')}Copy</button><button class="btn btn-primary" type="button" data-ack>${icon('check')}I've saved it</button>`,
-    onMount(el, close) {
-      on(el, 'click', '[data-copy]', () => copyText(code));
-      on(el, 'click', '[data-ack]', async () => {
-        try { await apiPost('ackRecovery'); close(); toast('Recovery code saved'); } catch (e) { showError(e); }
-      });
-    },
-  });
-}
-
 /* ---------- Start-up and signing out ---------- */
 async function signOut() {
   try { await apiPost('logout', {}, { quiet: true }); } catch (e) { /* already signed out */ }
@@ -354,7 +340,6 @@ async function enterApp() {
   }
   router();
   startPolling();
-  if (S.status.recovery_code) showRecoveryCode(S.status.recovery_code);
 }
 
 async function boot() {

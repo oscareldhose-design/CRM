@@ -29,9 +29,9 @@ async function markLost(entity, record, onDone) {
   const reasons = S.meta.enums.lost_reason;
   modal({
     title: entity === 'cases' ? 'Mark case as lost' : 'Mark lead as lost', size: 'narrow',
-    sub: 'Lost work is kept in Tools → Lost cases and can be reopened at any time.',
+    sub: `Lost work is kept in Tools → ${isProtectionOnly() ? 'Lost leads' : 'Lost cases'} and can be reopened at any time.`,
     body: h`<div class="field"><label for="lost-r">Reason</label><select class="select" id="lost-r">${reasons.map((r) => h`<option>${r}</option>`)}</select></div>
-      <div class="field mt"><label for="lost-n">Details <span class="muted">(optional)</span></label><input class="input" id="lost-n" placeholder="e.g. Went with Halifax direct"></div>`,
+      <div class="field mt"><label for="lost-n">Details <span class="muted">(optional)</span></label><input class="input" id="lost-n" placeholder="${entity === 'cases' ? 'e.g. Went with Halifax direct' : 'e.g. Bought cover through their bank'}"></div>`,
     foot: h`<button class="btn btn-ghost" type="button" data-close>Cancel</button><button class="btn btn-danger" type="button" data-ok>${icon('x-circle')}Mark as lost</button>`,
     onMount(el, close) {
       on(el, 'click', '[data-ok]', async (e, btn) => {
@@ -58,6 +58,7 @@ async function trashRecord(entity, record, what, after) {
 async function viewDashboard({ el, stale }) {
   const d = await apiGet('dashboard');
   if (stale()) return;
+  if (d.mode === 'protection') return dashboardProtection(el, d);
   const k = d.kpis;
   const first = (S.me.full_name || '').split(' ')[0];
   const reminderIcon = { high: 'alert', medium: 'clock', info: 'spark' };
@@ -106,6 +107,46 @@ async function viewDashboard({ el, stale }) {
   wireTasks($('[data-mytasks]', el), () => d.my_tasks, () => router());
 }
 
+function recentActivityHtml(recent) {
+  return recent.length ? h`<div class="list">${recent.map((a) => {
+    const link = a.case_id && !isProtectionOnly() ? `#/cases/${a.case_id}` : a.client_id ? `#/clients/${a.client_id}` : a.lead_id ? `#/leads/${a.lead_id}` : a.policy_id ? `#/policies/${a.policy_id}` : '#/dashboard';
+    return h`<a class="list-item" href="${link}"><span class="tl-icon ${a.type === 'system' ? 'system' : ''}">${icon(ACT_ICON[a.type] || 'note', 'ic-sm')}</span>
+      <span class="grow"><span class="li-title">${a.client_name || a.lead_name || ''}</span> <span class="li-sub">· ${a.user_name || 'CRM'} · ${relTime(a.created_at)}</span><br><span class="small ellipsis" style="display:block">${a.summary}</span></span></a>`;
+  })}</div>` : emptyState('history', 'No activity yet', '');
+}
+function dashboardProtection(el, d) {
+  const k = d.kpis;
+  const first = (S.me.full_name || '').split(' ')[0];
+  const reminderIcon = { high: 'alert', medium: 'clock', info: 'spark' };
+  setHTML(el, h`${pageHead({
+    title: `${greeting()}, ${first}`,
+    sub: `Here's what needs attention in ${S.officeName} today, ${fmtDate(today(), { weekday: 'long', day: 'numeric', month: 'long' })}.`,
+    actions: h`<button class="btn btn-secondary" type="button" data-act="lead">${icon('lead')}New lead</button><button class="btn btn-primary" type="button" data-act="policy">${icon('shield')}New policy</button>`,
+  })}
+  <div class="kpis">
+    ${kpi('New leads · 7 days', num(k.new_leads_7d), `${num(k.hot_leads)} HOT lead${k.hot_leads === 1 ? '' : 's'} open`, '#/leads')}
+    ${kpi('Policies in force', num(k.policies_in_force), `${money(k.premiums, 2)} a month`, '#/protection?status=on_risk')}
+    ${kpi('Quotes & applications', num(k.open_quotes), 'waiting to go on risk', '#/protection?status=quotes')}
+    ${kpi('Renewals · 30 days', num(k.renewals_30), 'follow-up tasks are created', '#/protection?status=renewals', k.renewals_30 > 0)}
+    ${kpi('Tasks due today', num(k.tasks_today), `${num(k.tasks_overdue)} overdue`, '#/tasks?due=today', k.tasks_overdue > 0)}
+    ${kpi('Opportunities', num(k.opportunities), 'clients without cover and reviews', '#/opportunities')}
+  </div>
+  <div class="grid grid-main">
+    <div class="stack">
+      <section class="card"><div class="card-head"><div><h2>Needs attention now</h2><div class="sub">Worked out automatically from your office's records</div></div></div>
+        <div class="card-body stack-sm">${d.reminders.length ? d.reminders.map((r) => h`<a class="reminder ${r.level}" href="${r.link}"><span class="r-icon">${icon(reminderIcon[r.level] || 'info')}</span><span>${r.text}</span>${icon('chevron-right', 'ic-chev')}</a>`)
+          : emptyState('check-circle', 'Nothing urgent', 'No reminders right now. Nice work.')}</div></section>
+      <section class="card"><div class="card-head"><div><h2>My tasks</h2><div class="sub">Overdue and due today, assigned to you</div></div><a href="#/tasks?mine=1" class="btn btn-ghost btn-sm">All my tasks</a></div>
+        <div class="card-body" data-mytasks>${tasksHtml(d.my_tasks, { showWho: false, showLink: true })}</div></section>
+    </div>
+    <section class="card"><div class="card-head"><h2>Recent activity</h2></div><div class="card-body">${recentActivityHtml(d.recent)}</div></section>
+  </div>`);
+  setTitle('Dashboard');
+  on(el, 'click', '[data-act="lead"]', () => newLead());
+  on(el, 'click', '[data-act="policy"]', () => newPolicy());
+  wireTasks($('[data-mytasks]', el), () => d.my_tasks, () => router());
+}
+
 /* ---------- Leads ---------- */
 async function viewLeads({ el, query }) {
   const state = { status: query.get('status') || 'open', rating: query.get('rating') || '', mine: query.get('mine') === '1', q: query.get('q') || '' };
@@ -132,7 +173,7 @@ async function viewLeads({ el, query }) {
         { k: 'score', label: 'Rating', render: (r) => ratingBadge(r.rating, r.score), exportValue: (r) => `${r.rating} (${r.score})` },
         { k: 'enquiry_type', label: 'Looking for', value: (r) => label('enquiry_type', r.enquiry_type), render: (r) => h`${label('enquiry_type', r.enquiry_type)}<div class="t-sub">${label('timescale', r.timescale)}</div>` },
         { k: 'source', label: 'Source', value: (r) => label('source', r.source) },
-        { k: 'loan_amount', label: 'Loan', right: true, render: (r) => money(r.loan_amount), value: (r) => +r.loan_amount || null },
+        ...(isProtectionOnly() ? [] : [{ k: 'loan_amount', label: 'Loan', right: true, render: (r) => money(r.loan_amount), value: (r) => +r.loan_amount || null }]),
         { k: 'adviser_id', label: 'Adviser', value: (r) => userName(r.adviser_id) },
         { k: 'status', label: 'Status', value: (r) => label('lead_status', r.status), render: (r) => statusBadge('lead_status', r.status) },
         { k: 'created_at', label: 'Added', render: (r) => h`<span title="${fmtDateTime(r.created_at)}">${relTime(r.created_at)}</span>`, exportValue: (r) => fmtDate(r.created_at) },
@@ -174,7 +215,7 @@ async function viewLead({ el, params, stale }) {
     <div class="stack">
       <section class="card"><div class="card-head"><h2>Enquiry</h2></div><div class="card-body">${kvHtml([
         ['Phone', telLink(l.phone)], ['Email', mailLink(l.email)], ['Looking for', label('enquiry_type', l.enquiry_type)], ['Timescale', label('timescale', l.timescale)],
-        ['Loan amount', money(l.loan_amount)], ['Property value', money(l.property_value)], ['Deposit', money(l.deposit)], ['Loan to value', ltv(l.loan_amount, l.property_value)],
+        ...(isProtectionOnly() ? [] : [['Loan amount', money(l.loan_amount)], ['Property value', money(l.property_value)], ['Deposit', money(l.deposit)], ['Loan to value', ltv(l.loan_amount, l.property_value)]]),
         ['Employment', label('employment', l.employment)], ['Credit history', label('credit_issues', l.credit_issues)], ['Source', label('source', l.source)],
         ['Introducer', l.introducer_id ? h`<a href="#/introducers/${l.introducer_id}">${(S.meta.introducers.find((i) => i.id === l.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
         ['Adviser', userName(l.adviser_id)], ['Administrator', userName(l.administrator_id)], ['Added', fmtDateTime(l.created_at)], ['Lead score', `${l.score} / 100 (${l.rating})`],
@@ -188,7 +229,7 @@ async function viewLead({ el, params, stale }) {
   wireTimeline($('[data-timeline]', el), reload);
   on(el, 'click', '[data-act]', async (e, b) => {
     const a = b.dataset.act;
-    if (a === 'edit') editRecord({ entity: 'leads', record: l, fields: FIELDS.leads, title: `Edit ${fullName(l)}`, onSaved: reload });
+    if (a === 'edit') editRecord({ entity: 'leads', record: l, fields: leadFields(), title: `Edit ${fullName(l)}`, onSaved: reload });
     if (a === 'log') logActivity(target, reload);
     if (a === 'email') emailComposer(target, reload, 'First contact');
     if (a === 'task') openTask(null, target, reload);
@@ -197,7 +238,7 @@ async function viewLead({ el, params, stale }) {
     if (a === 'delete') trashRecord('leads', l, 'this lead', () => { location.hash = '#/leads'; });
     if (a === 'convert') {
       const caseTypes = S.meta.enums.case_type;
-      const willCase = l.enquiry_type && caseTypes[l.enquiry_type];
+      const willCase = l.enquiry_type && caseTypes[l.enquiry_type] && !isProtectionOnly();
       const willQuote = ['protection', 'insurance', 'business_protection'].includes(l.enquiry_type);
       modal({
         title: `Convert ${fullName(l)} to a client`, size: 'narrow',
@@ -224,7 +265,7 @@ async function viewLead({ el, params, stale }) {
 async function viewClients({ el, query }) {
   const state = { mine: query.get('mine') === '1', q: query.get('q') || '' };
   setHTML(el, h`${pageHead({
-    title: 'Clients', sub: 'Full profiles with cases, key dates, plans held elsewhere and a timeline of every call and note.',
+    title: 'Clients', sub: isProtectionOnly() ? 'Full profiles with their cover, plans held elsewhere and a timeline of every call and note.' : 'Full profiles with cases, key dates, plans held elsewhere and a timeline of every call and note.',
     actions: h`<a class="btn btn-ghost" href="#/data?entity=clients">${icon('upload')}Import</a><button class="btn btn-primary" type="button" data-new>${icon('plus')}New client</button>`,
   })}
   <div class="filters"><div class="search-pill"><input type="search" data-q value="${state.q}" placeholder="Search name, email, phone or postcode" aria-label="Search clients"><span class="go">${icon('search', 'ic-sm')}</span></div>
@@ -276,9 +317,14 @@ async function viewClient({ el, params, query, stale }) {
   setTitle(name);
   const openTasks = d.tasks.filter((t) => t.status === 'open');
   const openOpps = d.opportunities.filter((o) => o.status === 'open');
-  const tabs = [['overview', 'Overview'], ['cases', `Cases (${d.cases.length})`], ['protection', `Protection & insurance (${d.policies.length})`],
-    ['timeline', 'Timeline'], ['tasks', `Tasks (${openTasks.length})`], ['documents', `Documents (${d.documents.length})`]];
+  const mortgage = !isProtectionOnly();
+  const tabs = [['overview', 'Overview'], ...(mortgage ? [['cases', `Cases (${d.cases.length})`]] : []), ['protection', `Protection & insurance (${d.policies.length})`],
+    ['timeline', 'Timeline'], ['tasks', `Tasks (${openTasks.length})`], ...(mortgage ? [['documents', `Documents (${d.documents.length})`]] : [])];
   let body;
+  if ((tab === 'cases' || tab === 'documents') && !mortgage) {
+    location.replace(`#/clients/${c.id}`);
+    return;
+  }
   if (tab === 'cases') {
     body = h`<div class="row-between mb"><p class="muted" style="margin:0">Every mortgage case for ${c.first_name}, with its risk rating.</p><button class="btn btn-primary btn-sm" type="button" data-act="case">${icon('plus')}New case</button></div>
       ${d.cases.length ? h`<div class="grid grid-3">${d.cases.map(caseCard)}</div>` : h`<div class="card">${emptyState('home', 'No cases yet', 'Open a mortgage case to track it through the pipeline.')}</div>`}`;
@@ -302,7 +348,7 @@ async function viewClient({ el, params, query, stale }) {
         ['Employment', label('employment', c.employment_status)], ['Annual income', money(c.annual_income)], ['Home situation', label('homeowner_status', c.homeowner_status)],
         ['Landlord', c.is_landlord ? 'Yes' : ''],
       ])}</div></section>
-      <section class="card"><div class="card-head"><div><h2>Plans held elsewhere</h2><div class="sub">Cover, pensions and mortgages with other firms</div></div></div><div class="card-body">${c.existing_plans ? h`<div class="pre">${c.existing_plans}</div>` : h`<p class="muted">None recorded.</p>`}</div></section>
+      <section class="card"><div class="card-head"><div><h2>Plans held elsewhere</h2><div class="sub">${isProtectionOnly() ? 'Cover and pensions with other firms' : 'Cover, pensions and mortgages with other firms'}</div></div></div><div class="card-body">${c.existing_plans ? h`<div class="pre">${c.existing_plans}</div>` : h`<p class="muted">None recorded.</p>`}</div></section>
       <section class="card"><div class="card-head"><h2>Relationship</h2></div><div class="card-body">${kvHtml([
         ['Adviser', userName(c.adviser_id)], ['Administrator', userName(c.administrator_id)], ['Source', label('source', c.source)],
         ['Introducer', c.introducer_id ? h`<a href="#/introducers/${c.introducer_id}">${(S.meta.introducers.find((i) => i.id === c.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
@@ -312,8 +358,10 @@ async function viewClient({ el, params, query, stale }) {
     </div><div class="stack">
       <section class="card card-accent"><div class="card-head"><div><h2>Opportunities</h2><div class="sub">Spotted automatically</div></div><a class="btn btn-ghost btn-sm" href="#/opportunities">All</a></div>
         <div class="card-body">${openOpps.length ? h`<div class="list">${openOpps.map((o) => h`<div class="list-item">${icon('spark')}<div><div class="li-title">${o.title}</div><div class="li-sub">${o.detail || ''}</div></div></div>`)}</div>` : h`<p class="muted">No open opportunities.</p>`}</div></section>
-      <section class="card"><div class="card-head"><h2>Live cases</h2><button class="btn btn-ghost btn-sm" type="button" data-act="case">${icon('plus')}New</button></div>
-        <div class="card-body stack-sm">${d.cases.filter((k) => k.status === 'active').map(caseCard)}${!d.cases.some((k) => k.status === 'active') ? h`<p class="muted">No live cases.</p>` : ''}</div></section>
+      ${mortgage ? h`<section class="card"><div class="card-head"><h2>Live cases</h2><button class="btn btn-ghost btn-sm" type="button" data-act="case">${icon('plus')}New</button></div>
+        <div class="card-body stack-sm">${d.cases.filter((k) => k.status === 'active').map(caseCard)}${!d.cases.some((k) => k.status === 'active') ? h`<p class="muted">No live cases.</p>` : ''}</div></section>`
+        : h`<section class="card"><div class="card-head"><h2>Cover</h2><button class="btn btn-ghost btn-sm" type="button" data-act="policy">${icon('plus')}Add</button></div>
+        <div class="card-body">${d.policies.length ? h`<div class="list">${d.policies.map((p) => h`<a class="list-item" href="#/policies/${p.id}">${icon('shield')}<div class="grow"><div class="li-title">${label('policy_type', p.policy_type)}</div><div class="li-sub">${p.provider || ''} ${p.premium ? '· ' + money(p.premium, 2) + '/month' : ''}</div></div>${statusBadge('policy_status', p.status)}</a>`)}</div>` : h`<p class="muted">No cover recorded yet.</p>`}</div></section>`}
       <section class="card"><div class="card-head"><h2>Upcoming tasks</h2><button class="btn btn-ghost btn-sm" type="button" data-act="task">${icon('plus')}Add</button></div><div class="card-body" data-tasks>${tasksHtml(openTasks.slice(0, 6))}</div></section>
       <section class="card"><div class="card-head"><h2>Latest activity</h2><button class="btn btn-ghost btn-sm" type="button" data-act="log">${icon('plus')}Log</button></div><div class="card-body" data-timeline>${timelineHtml(d.activities.slice(0, 5))}</div></section>
     </div></div>`;
@@ -326,7 +374,7 @@ async function viewClient({ el, params, query, stale }) {
     <div class="row">
       <button class="btn btn-secondary" type="button" data-act="log">${icon('phone')}Log call</button>
       <button class="btn btn-secondary" type="button" data-act="email">${icon('mail')}Email</button>
-      <button class="btn btn-primary" type="button" data-act="case">${icon('plus')}New case</button>
+      ${mortgage ? h`<button class="btn btn-primary" type="button" data-act="case">${icon('plus')}New case</button>` : h`<button class="btn btn-primary" type="button" data-act="policy">${icon('shield')}New policy</button>`}
       <button class="btn btn-ghost" type="button" data-act="edit">${icon('edit')}Edit</button>
       ${isManager() && !c.erased_at ? h`<button class="icon-btn" type="button" data-act="erase" aria-label="Erase personal data (GDPR)" title="Erase personal data (GDPR)">${icon('gdpr')}</button>` : ''}
       <button class="icon-btn" type="button" data-act="delete" aria-label="Move to trash" title="Move to trash">${icon('trash')}</button>

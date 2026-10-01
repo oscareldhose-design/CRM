@@ -26,7 +26,7 @@ if (!function_exists('mb_strlen')) {
     }
 }
 
-const CRM_SCHEMA_VERSION = 1;
+const CRM_SCHEMA_VERSION = 2;
 const CRM_GUARD = '<?php http_response_code(404); exit; ?>';
 const CRM_HTACCESS = "# MAP CRM: private data. Block all web access to this folder.\n"
     . "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
@@ -149,6 +149,9 @@ function crm_dispatch(array $routes)
             crm_fail(403, 'must_change_password', 'Please choose a new password before carrying on.');
         }
         crm_require_access($access, $user);
+        if (crm_protection_only($user)) {
+            crm_forbid_mortgage($action);
+        }
         if ($access === 'office' || $access === 'manager') {
             crm_engine_maybe_run(crm_office_id());
         }
@@ -380,6 +383,47 @@ function crm_recovery_code()
     return 'MAP-' . implode('-', $parts);
 }
 
+/**
+ * Sends a plain-text email with PHP's mail(). Returns true if the server accepted it.
+ * (For testing, set MAP_CRM_MAIL_FILE to write emails to a file instead of sending them.)
+ */
+function crm_mail($to, $subject, $body, $replyTo = null)
+{
+    $clean = function ($s) {
+        return trim(preg_replace('/[\r\n]+/', ' ', (string) $s));
+    };
+    $to = $clean($to);
+    $from = $clean(CRM_MAIL_FROM);
+    $headers = [
+        'From: MAP CRM <' . $from . '>',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+        'X-Mailer: MAP CRM',
+    ];
+    if ($replyTo && crm_valid_email($replyTo)) {
+        $headers[] = 'Reply-To: ' . $clean($replyTo);
+    }
+    $subj = '=?UTF-8?B?' . base64_encode($clean($subject)) . '?=';
+    $body = str_replace("\n", "\r\n", str_replace("\r\n", "\n", (string) $body));
+    $file = getenv('MAP_CRM_MAIL_FILE');
+    if ($file) {
+        return file_put_contents($file, json_encode(['to' => $to, 'subject' => $clean($subject), 'body' => $body, 'headers' => $headers]) . "\n", FILE_APPEND | LOCK_EX) !== false;
+    }
+    if (!function_exists('mail')) {
+        error_log('MAP CRM: mail() is not available on this server; could not email ' . $to);
+        return false;
+    }
+    $ok = @mail($to, $subj, $body, implode("\r\n", $headers), '-f' . $from);
+    if (!$ok) {
+        $ok = @mail($to, $subj, $body, implode("\r\n", $headers));
+    }
+    if (!$ok) {
+        error_log('MAP CRM: the server would not send an email to ' . $to);
+    }
+    return $ok;
+}
+
 function crm_client_ip()
 {
     if (CRM_CLIENT_IP_HEADER !== '' && !empty($_SERVER[CRM_CLIENT_IP_HEADER])) {
@@ -442,6 +486,7 @@ function crm_db()
     }
     if ($ver < CRM_SCHEMA_VERSION) {
         crm_schema($pdo);
+        crm_migrate($pdo);
         crm_seed($pdo);
         $pdo->prepare("INSERT INTO settings (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
             ->execute([CRM_SCHEMA_VERSION]);
@@ -578,6 +623,7 @@ CREATE TABLE IF NOT EXISTS users (
   full_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL,
+  advice_type TEXT NOT NULL DEFAULT 'mortgage_protection',
   office_id INTEGER REFERENCES offices(id),
   status TEXT NOT NULL DEFAULT 'pending',
   is_office_account INTEGER NOT NULL DEFAULT 0,
@@ -911,6 +957,17 @@ CREATE INDEX IF NOT EXISTS idx_sales_calls_contact ON sales_calls(contact_id);
 ");
 }
 
+/** Brings a database made by an earlier version up to date. */
+function crm_migrate(PDO $pdo)
+{
+    $cols = array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!in_array('advice_type', $cols, true)) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN advice_type TEXT NOT NULL DEFAULT 'mortgage_protection'");
+    }
+    // Version 2: the office logins are equal office accounts; the admin login manages every login.
+    $pdo->exec("UPDATE users SET role = 'manager' WHERE role = 'admin' AND is_office_account = 1");
+}
+
 /** First run: the three offices, their logins, the website admin login, the recovery code and starter email templates. */
 function crm_seed(PDO $pdo)
 {
@@ -919,7 +976,7 @@ function crm_seed(PDO $pdo)
     }
     $now = crm_now();
     $offices = [
-        ['Newcastle', '11 Valley House, Seventh Avenue, Kingsway South, Team Valley, Gateshead', 'admin', 'newcastle', 'Newcastle Office'],
+        ['Newcastle', '11 Valley House, Seventh Avenue, Kingsway South, Team Valley, Gateshead', 'manager', 'newcastle', 'Newcastle Office'],
         ['Nottingham', '20 Jarodale House, 7 Gregory Boulevard, Forest Fields, Nottingham', 'manager', 'nottingham', 'Nottingham Office'],
         ['London', 'CP House, Otterspool Way, Watford, Hertfordshire', 'manager', 'london', 'London Office'],
     ];
@@ -936,13 +993,12 @@ function crm_seed(PDO $pdo)
     $code = crm_recovery_code();
     $set = $pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
     $set->execute(['recovery_hash', password_hash($code, PASSWORD_DEFAULT)]);
-    $set->execute(['recovery_pending', $code]);   // shown once to Newcastle at first sign-in, then deleted
-    $set->execute(['require_approval', '1']);
+    $set->execute(['recovery_pending', $code]);   // shown once to the admin login at first sign-in, then deleted
     $set->execute(['team_threshold', '30']);
     $set->execute(['quiet_days', '14']);
 
     $templates = [
-        ['First contact', 'Leads', 'Your mortgage enquiry with MAP',
+        ['First contact', 'Leads', 'Your enquiry with MAP',
             "Hi {{first_name}},\n\nThank you for getting in touch with MAP. I'm {{my_name}} and I'll be looking after your enquiry.\n\nCould you let me know a good time for a quick call so we can talk through what you're looking for? It usually takes about 15 minutes.\n\nKind regards,\n{{my_name}}\nMAP | The Mortgage Advice Professionals\n{{office_name}} office"],
         ['Documents needed', 'Cases', 'Documents for your mortgage application',
             "Hi {{first_name}},\n\nTo move your application forward, please send us:\n\n- Photo ID (passport or driving licence)\n- Proof of address dated within the last 3 months\n- Your last 3 months' payslips\n- Your last 3 months' bank statements\n- Evidence of your deposit\n\nYou can reply to this email with photos or scans.\n\nKind regards,\n{{my_name}}\nMAP | Your way home"],

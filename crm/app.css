@@ -616,6 +616,14 @@ a.list-item:hover .li-title { color: var(--brand); }
 .pw-rules { display: flex; gap: 6px 12px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-3); }
 .pw-rules span { display: inline-flex; gap: 4px; align-items: center; }
 .pw-rules span.ok { color: var(--ok); }
+.advice-choice { border: 0; padding: 0; margin: 0; gap: 8px; }
+.advice-choice legend { margin-bottom: 6px; padding: 0; }
+.choice { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border: 1.5px solid var(--line-strong); border-radius: var(--r); cursor: pointer; transition: border-color .15s, background .15s; }
+.choice:hover { border-color: var(--brand-300); background: var(--brand-50); }
+.choice:has(input:checked) { border-color: var(--brand); background: var(--brand-50); box-shadow: 0 0 0 3px var(--focus); }
+.choice input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--brand); flex: none; }
+.choice b { display: block; color: var(--text); font-size: 14.5px; }
+.choice small { display: block; color: var(--text-3); font-size: 12.5px; margin-top: 1px; }
 .domain-input { display: flex; align-items: stretch; }
 .domain-input .input { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .domain-input .suffix {

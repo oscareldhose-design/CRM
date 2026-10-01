@@ -330,6 +330,37 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		.pw-layer.show { display: grid; }
 		.pw-box { width: min(440px, 100%); background: var(--surface); border: 2px solid var(--p); border-radius: var(--r); box-shadow: var(--shadow-lg); padding: 22px; display: grid; gap: 12px; }
 		.pw-box h2 { font-size: 20px; color: var(--heading); }
+		.pw-box.wide { width: min(640px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+		.pw-box .muted { margin-bottom: 0; }
+
+		/* ---------- CRM logins ---------- */
+		.tab-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; margin-left: 6px; border-radius: 999px; background: var(--p); color: #fff; font-size: 11px; font-weight: 800; }
+		.tab-btn.active .tab-count { background: rgba(255, 255, 255, .3); }
+		.crm-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 18px; border-radius: var(--r2); background: var(--p-soft); border: 1.5px solid rgba(163, 8, 163, .3); color: var(--text); font-weight: 600; }
+		.crm-notice[hidden] { display: none; }
+		.crm-notice .btn { min-height: 36px; padding: 0 16px; font-size: 13px; }
+		.crm-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+		.crm-toolbar input { flex: 1 1 240px; width: auto; }
+		.crm-toolbar select { flex: 0 1 220px; width: auto; }
+		.crm-person { display: flex; gap: 12px; align-items: center; min-width: 0; }
+		.crm-avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--grad); color: #fff; display: grid; place-items: center; font: 800 14px var(--font-display); flex: none; }
+		.crm-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+		.chip.info { background: var(--info-bg); color: var(--info); border-color: var(--info-line); }
+		.item .form-grid { margin: 4px 0 2px; }
+		.item .field label { font-size: 12.5px; }
+		.item select { min-height: 40px; padding-top: 8px; padding-bottom: 8px; }
+		.item [hidden] { display: none !important; }
+		.crm-office-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin-top: 4px; }
+		.crm-mini { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 0 2px; }
+		.crm-mini b { display: block; font-size: 19px; color: var(--heading); font-variant-numeric: tabular-nums; }
+		.crm-mini span { font-size: 12px; color: var(--text3); }
+		.crm-check { display: flex !important; grid-column: span 6; align-items: center; gap: 10px; font-size: 14px; color: var(--text2); cursor: pointer; }
+		.crm-check input { width: 20px; min-height: 20px; height: 20px; accent-color: var(--p); flex: none; }
+		.crm-code { font: 800 22px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .06em; text-align: center; padding: 18px; border-radius: var(--r2); background: var(--p-soft); border: 1.5px dashed rgba(163, 8, 163, .45); color: var(--heading); word-break: break-all; user-select: all; }
+		.crm-points { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 14px; color: var(--text2); }
+		.crm-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+		@media (max-width: 760px) { .crm-two { grid-template-columns: 1fr; } }
+		.field [hidden], .field[hidden] { display: none !important; }
 	</style>
 	<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 </head>
@@ -351,6 +382,16 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		</div>
 
 		<div class="sidebar-scroll">
+			<div class="sidebar-section">
+				<div class="sidebar-section-label">CRM logins</div>
+				<nav class="sidebar-nav">
+					<button class="sidebar-link" type="button" data-target="crm-requests-section"><span class="nav-icon">🙋</span> Login requests <span class="nav-badge" id="crmPendingBadge" hidden>0</span></button>
+					<button class="sidebar-link" type="button" data-target="crm-logins-section"><span class="nav-icon">👥</span> Logins</button>
+					<button class="sidebar-link" type="button" data-target="crm-offices-section"><span class="nav-icon">🏢</span> Offices &amp; settings</button>
+					<button class="sidebar-link" type="button" data-target="crm-security-section"><span class="nav-icon">🛡️</span> Security &amp; backups</button>
+				</nav>
+			</div>
+
 			<div class="sidebar-section">
 				<div class="sidebar-section-label">Website content</div>
 				<nav class="sidebar-nav" id="sidebarNav">
@@ -409,11 +450,22 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 
 			<div class="page-intro">
 				<h1>Website admin</h1>
-				<p>Manage what appears on themaap.co.uk: advisors and the team, search links, reviews, news, announcements, the contact inbox and the newsletter. Changes saved to Firebase go live on the website.</p>
+				<p>Approve and manage every MAP CRM login, and manage what appears on themaap.co.uk: advisors and the team, search links, reviews, news, announcements, the contact inbox and the newsletter. Website changes saved to Firebase go live straight away.</p>
+			</div>
+
+			<div class="crm-notice" id="crmPendingNotice" hidden>
+				<span>🙋 <span id="crmPendingNoticeText">Someone is waiting for a CRM login.</span></span>
+				<button class="btn primary" type="button" id="crmReviewRequestsBtn">Review requests</button>
 			</div>
 
 			<!-- STATS ROW -->
 			<div class="stats-row">
+				<div class="stat-card">
+					<div class="stat-icon">🙋</div>
+					<div class="stat-label">Login requests</div>
+					<div class="stat-value" id="crmStatPending">0</div>
+					<div class="stat-sub">Waiting for approval</div>
+				</div>
 				<div class="stat-card">
 					<div class="stat-icon">🔗</div>
 					<div class="stat-label">Connection</div>
@@ -454,6 +506,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 
 			<!-- TABS -->
 			<div class="tabs-bar" id="dashboardTabs" role="tablist">
+				<button class="tab-btn" type="button" data-tab="logins">CRM logins<span class="tab-count" id="crmPendingTab" hidden>0</span></button>
 				<button class="tab-btn active" type="button" data-tab="content">Advisors &amp; search</button>
 				<button class="tab-btn" type="button" data-tab="reviews">Reviews</button>
 				<button class="tab-btn" type="button" data-tab="news">News</button>
@@ -462,6 +515,93 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				<button class="tab-btn" type="button" data-tab="newsletter">Newsletter</button>
 				<button class="tab-btn" type="button" data-tab="connection">Connection</button>
 			</div>
+
+			<!-- ═══ CRM LOGINS (requests, logins, offices, settings, security) ═══ -->
+			<section class="section-card" id="crm-requests-section" data-tab="logins">
+				<div class="card-head">
+					<div class="card-head-left"><div class="card-head-icon">🙋</div><div><h2>Login requests</h2><div class="card-head-sub">People who asked for a CRM login with their @themaap.co.uk email. info@themaap.co.uk gets an email for each one.</div></div></div>
+					<span class="adm-count-pill" id="crmPendingCount">0 waiting</span>
+				</div>
+				<div class="card-body">
+					<p class="muted" id="crmRequestEmpty" style="margin:0">No requests are waiting. When someone asks for a login on the sign-in page, it appears here for you to approve.</p>
+					<div class="list" id="crmRequestList" style="margin-top:0"></div>
+					<div class="status" id="crmRequestStatus"></div>
+				</div>
+			</section>
+
+			<section class="section-card" id="crm-logins-section" data-tab="logins">
+				<div class="card-head">
+					<div class="card-head-left"><div class="card-head-icon">👥</div><div><h2>Logins</h2><div class="card-head-sub">The office logins and everyone with their own login. Five wrong passwords lock a login for 15 minutes.</div></div></div>
+					<button class="btn primary" type="button" id="crmAddLoginBtn">＋ Add a login</button>
+				</div>
+				<div class="card-body">
+					<div class="crm-toolbar">
+						<input type="search" id="crmLoginSearch" placeholder="Search by name, username, email or office" aria-label="Search logins">
+						<select id="crmLoginFilter" aria-label="Which logins to show">
+							<option value="">All logins</option>
+							<option value="office">Office logins</option>
+							<option value="staff">Advisers &amp; staff</option>
+							<option value="protection">Protection only</option>
+							<option value="disabled">Switched off</option>
+							<option value="locked">Locked</option>
+						</select>
+					</div>
+					<div class="status" id="crmLoginStatus"></div>
+					<div id="crmLoginGroups"></div>
+				</div>
+			</section>
+
+			<section class="section-card" id="crm-offices-section" data-tab="logins">
+				<div class="card-head">
+					<div class="card-head-left"><div class="card-head-icon">🏢</div><div><h2>Offices &amp; settings</h2><div class="card-head-sub">Each office has its own secure area and sees only its own clients.</div></div></div>
+					<button class="btn primary" type="button" id="crmAddOfficeBtn">＋ Add an office</button>
+				</div>
+				<div class="card-body">
+					<div class="crm-office-grid" id="crmOfficeList"></div>
+					<div class="status" id="crmOfficeStatus"></div>
+					<div class="adm-section-divider">CRM settings</div>
+					<form class="form-grid" id="crmSettingsForm" novalidate>
+						<div class="field half"><label for="crmTeamThreshold">Team workload limit (points)</label><input id="crmTeamThreshold" name="team_threshold" type="number" min="5" max="200" inputmode="numeric"><div class="key-hint" style="margin-top:0">Someone is "overloaded" at this many points. Live case = 1, open task = 0.5, overdue task = 2.</div></div>
+						<div class="field half"><label for="crmQuietDays">A case has "gone quiet" after (days)</label><input id="crmQuietDays" name="quiet_days" type="number" min="3" max="90" inputmode="numeric"></div>
+					</form>
+					<div class="actions"><button class="btn primary" type="submit" form="crmSettingsForm" id="crmSettingsSave">Save settings</button></div>
+					<div class="status" id="crmSettingsStatus"></div>
+					<div class="key-hint" id="crmServerInfo"></div>
+				</div>
+			</section>
+
+			<section class="section-card" id="crm-security-section" data-tab="logins">
+				<div class="card-head">
+					<div class="card-head-left"><div class="card-head-icon">🛡️</div><div><h2>Security &amp; backups</h2><div class="card-head-sub">The recovery code for this admin login, and full copies of the CRM.</div></div></div>
+				</div>
+				<div class="card-body">
+					<div class="crm-two">
+						<div>
+							<div class="adm-form-header">Recovery code</div>
+							<p class="muted">If the admin password is ever forgotten, the recovery code resets it from the sign-in page ("Forgot password?"). Each code works once.</p>
+							<button class="btn ghost" type="button" id="crmNewRecoveryBtn">🔑 Make a new recovery code</button>
+							<div class="key-hint" id="crmRecoveryState"></div>
+							<div class="status" id="crmSecurityStatus"></div>
+						</div>
+						<div>
+							<div class="adm-form-header">Backups</div>
+							<p class="muted">Download a copy of every office's CRM data. Backups contain client details, so keep them somewhere safe.</p>
+							<div class="row-actions">
+								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminBackupAll">⬇️ Every office (JSON)</a>
+								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminDatabase">🗄️ Database file (.sqlite)</a>
+							</div>
+						</div>
+					</div>
+					<div class="adm-section-divider">How logins are protected</div>
+					<ul class="crm-points">
+						<li>Only @themaap.co.uk email addresses can ask for a login, and nobody gets in until you approve them here.</li>
+						<li>Passwords are stored scrambled (bcrypt), never as plain text.</li>
+						<li>Five wrong passwords lock a login for 15 minutes; repeated attempts from one place are blocked too.</li>
+						<li>Resetting a password signs that person out everywhere, and they must choose a new one.</li>
+						<li>Protection-only advisers never see mortgage cases, documents or figures.</li>
+					</ul>
+				</div>
+			</section>
 
 			<!-- ═══ ADVISORS SECTION ═══ -->
 			<section class="section-card" id="advisors-section" data-tab="content">
@@ -931,6 +1071,11 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		<div class="status" id="mapPwStatus"></div>
 		<div class="actions" style="margin-top:4px"><button class="btn primary" type="submit">Save password</button><button class="btn ghost" type="button" id="mapPwCancel">Cancel</button></div>
 	</form>
+</div>
+
+<!-- CRM logins dialog -->
+<div class="pw-layer" id="crmDialog" role="dialog" aria-modal="true" aria-labelledby="crmDialogTitle">
+	<div class="pw-box wide"><h2 id="crmDialogTitle"></h2><div id="crmDialogBody" style="display:grid;gap:12px"></div></div>
 </div>
 
 <script>
@@ -2839,6 +2984,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			applyTheme(localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark');
 			setActiveTab(localStorage.getItem(TAB_STORAGE_KEY) || 'content');
 			setActiveSidebarLink('firebase-section');
+			document.documentElement.dataset.panelReady = '1';
 
 			// Always load the hardcoded default config; merge any localStorage overrides on top
 			let cfg = DEFAULT_FIREBASE_CONFIG;
@@ -2908,6 +3054,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		});
 	})();
 </script>
+<script src="{{CRM_BASE}}js/website-logins.js" data-api="{{CRM_BASE}}api.php" data-signin="{{CRM_BASE}}"></script>
 </body>
 </html>
 

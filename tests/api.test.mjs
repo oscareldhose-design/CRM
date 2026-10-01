@@ -1,9 +1,9 @@
-// MAP CRM API tests. Run with: node --test tests/
+// MAP CRM API tests. Run with: node --test tests/api.test.mjs
 // Starts PHP's built-in server on a throwaway database and exercises the main flows end to end.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'crm');
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = `http://127.0.0.1:${PORT}/api.php`;
 const PW = 'Map@2025#';
-let server, dataDir;
+let server, dataDir, mailFile;
 
 class Client {
   constructor() { this.cookie = ''; }
@@ -54,7 +54,8 @@ const daysFromNow = (n) => { const d = new Date(); d.setDate(d.getDate() + n); r
 
 before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'map-crm-test-'));
-  server = spawn('php', ['-S', `127.0.0.1:${PORT}`, '-t', ROOT], { env: { ...process.env, MAP_CRM_DATA_DIR: dataDir }, stdio: 'ignore' });
+  mailFile = join(dataDir, 'mail.jsonl');
+  server = spawn('php', ['-S', `127.0.0.1:${PORT}`, '-t', ROOT], { env: { ...process.env, MAP_CRM_DATA_DIR: dataDir, MAP_CRM_MAIL_FILE: mailFile }, stdio: 'ignore' });
   for (let i = 0; i < 50; i++) {
     try { const r = await fetch(`${BASE}?action=status`); if (r.ok) return; } catch { /* starting */ }
     await new Promise((r) => setTimeout(r, 100));
@@ -64,19 +65,23 @@ before(async () => {
 after(() => { server.kill(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const officeId = {};
-const newcastle = new Client(), nottingham = new Client(), london = new Client();
+const newcastle = new Client(), nottingham = new Client(), london = new Client(), admin = new Client();
+const mails = () => (existsSync(mailFile) ? readFileSync(mailFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-test('first run creates the three offices and their logins with Map@2025#', async () => {
+test('first run creates the three offices, one login for each whole office, and the admin login', async () => {
   const s = await new Client().get('status');
   assert.equal(s.status, 200);
   assert.deepEqual(s.json.offices.map((o) => o.name).sort(), ['London', 'Newcastle', 'Nottingham']);
   s.json.offices.forEach((o) => { officeId[o.name] = o.id; });
   const bad = await new Client().post('login', { username: 'newcastle', password: 'Map@2025' });
   assert.equal(bad.status, 401);
-  const nc = await newcastle.login('newcastle');
-  assert.equal(nc.role, 'admin');
-  assert.equal((await nottingham.login('nottingham')).role, 'manager');
-  assert.equal((await london.login('LONDON')).role, 'manager', 'usernames are not case sensitive');
+  for (const [c, name] of [[newcastle, 'newcastle'], [nottingham, 'nottingham'], [london, 'LONDON']]) {
+    const u = await c.login(name);
+    assert.equal(u.role, 'manager', `${name} is an office login like the others`);
+    assert.equal(u.is_office_account, true);
+    assert.equal(u.advice_type, 'mortgage_protection');
+  }
+  assert.equal((await admin.login('admin')).role, 'webadmin');
 });
 
 test('the admin login opens only the website admin panel', async () => {
@@ -100,38 +105,55 @@ test('POSTs without the CRM header are refused (CSRF)', async () => {
   assert.equal(r.json.code, 'csrf');
 });
 
-test('only @themaap.co.uk emails can request an account, and Newcastle approves it', async () => {
+test('only @themaap.co.uk emails can request an account; info@ is emailed and the admin approves it', async () => {
   const anon = new Client();
-  const gmail = await anon.post('register', { full_name: 'Sam Lee', email: 'sam@gmail.com', username: 'sam', password: 'Secret123', office_id: officeId.Nottingham, role: 'adviser' });
+  const base = { full_name: 'Sam Lee', password: 'Secret123', advice_type: 'mortgage_protection' };
+  const gmail = await anon.post('register', { ...base, email: 'sam@gmail.com', username: 'sam' });
   assert.equal(gmail.status, 400);
   assert.equal(gmail.json.field, 'email');
-  const lookalike = await anon.post('register', { full_name: 'Sam Lee', email: 'sam@themaap.co.uk.evil.com', username: 'sam', password: 'Secret123', office_id: officeId.Nottingham, role: 'adviser' });
+  const lookalike = await anon.post('register', { ...base, email: 'sam@themaap.co.uk.evil.com', username: 'sam' });
   assert.equal(lookalike.status, 400);
-  const weak = await anon.post('register', { full_name: 'Sam Lee', email: 'sam@themaap.co.uk', username: 'sam', password: 'password', office_id: officeId.Nottingham, role: 'adviser' });
+  const weak = await anon.post('register', { ...base, email: 'sam@themaap.co.uk', username: 'sam', password: 'password' });
   assert.equal(weak.json.field, 'password');
-  const ok = await anon.post('register', { full_name: 'Sam Lee', email: 'Sam.Lee@TheMAAP.co.uk', username: 'sam.lee', password: 'Secret123', office_id: officeId.Nottingham, role: 'adviser' });
+  const noAdvice = await anon.post('register', { ...base, email: 'sam@themaap.co.uk', username: 'sam', advice_type: '' });
+  assert.equal(noAdvice.status, 400);
+  assert.equal(noAdvice.json.field, 'advice_type', 'they must say mortgage & protection or protection only');
+  assert.equal(mails().length, 0, 'refused requests send no email');
+  const ok = await anon.post('register', { ...base, email: 'Sam.Lee@TheMAAP.co.uk', username: 'sam.lee', office_id: officeId.London, role: 'manager' });
   assert.equal(ok.status, 200, ok.text);
   assert.equal(ok.json.status, 'pending');
+  const sent = mails();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'info@themaap.co.uk');
+  assert.match(sent[0].subject, /Sam Lee/);
+  assert.match(sent[0].body, /sam\.lee@themaap\.co\.uk/);
+  assert.match(sent[0].body, /Mortgage & protection/);
+  assert.match(sent[0].body, /website-admin\.php/);
+  assert.ok(sent[0].headers.includes('Reply-To: sam.lee@themaap.co.uk'));
   const early = await new Client().post('login', { username: 'sam.lee', password: 'Secret123' });
   assert.equal(early.json.code, 'pending');
-  const dup = await anon.post('register', { full_name: 'Sam Lee', email: 'sam.lee@themaap.co.uk', username: 'sam2', password: 'Secret123', office_id: officeId.Nottingham, role: 'adviser' });
+  const dup = await anon.post('register', { ...base, email: 'sam.lee@themaap.co.uk', username: 'sam2' });
   assert.equal(dup.status, 409);
-  assert.equal((await nottingham.get('adminUsers')).status, 403, 'only Newcastle manages logins');
-  const users = (await newcastle.get('adminUsers')).json.rows;
+  assert.equal((await nottingham.get('adminUsers')).status, 403, 'office logins do not manage logins');
+  assert.equal((await newcastle.get('adminUsers')).status, 403, 'not even Newcastle');
+  const users = (await admin.get('adminUsers')).json.rows;
   const sam = users.find((u) => u.username === 'sam.lee');
-  assert.equal((await newcastle.post('adminUserApprove', { id: sam.id, role: 'adviser', office_id: officeId.Nottingham })).status, 200);
+  assert.equal(sam.role, 'adviser', 'people cannot pick their own role');
+  assert.equal(sam.office_id, null, 'or their own office');
+  assert.equal((await admin.post('adminUserApprove', { id: sam.id, role: 'adviser', office_id: 0 })).status, 400, 'an adviser needs an office');
+  assert.equal((await admin.post('adminUserApprove', { id: sam.id, role: 'adviser', office_id: officeId.Nottingham })).status, 200);
   const samC = new Client();
   assert.equal((await samC.login('sam.lee@themaap.co.uk', 'Secret123')).role, 'adviser');
 });
 
-test('five wrong passwords lock a login; Newcastle can unlock it', async () => {
+test('five wrong passwords lock a login; the admin can unlock it', async () => {
   const c = new Client();
   let last;
   for (let i = 0; i < 5; i++) last = await c.post('login', { username: 'london', password: 'nope' });
   assert.equal(last.status, 423);
   assert.equal((await c.post('login', { username: 'london', password: PW })).status, 423, 'even the right password is refused while locked');
-  const id = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'london').id;
-  await newcastle.post('adminUserUnlock', { id });
+  const id = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'london').id;
+  await admin.post('adminUserUnlock', { id });
   await new Client().login('london');
 });
 
@@ -139,19 +161,17 @@ let samId, nottAdminId, leadId, clientId, caseId;
 test('offices only see their own clients', async () => {
   const meta = (await nottingham.get('meta')).json;
   samId = meta.users.find((u) => u.full_name === 'Sam Lee').id;
-  const reg = await new Client().post('register', { full_name: 'Ana Admin', email: 'ana@themaap.co.uk', username: 'ana', password: 'Secret123', office_id: officeId.Nottingham, role: 'administrator' });
+  const reg = await new Client().post('register', { full_name: 'Ana Admin', email: 'ana@themaap.co.uk', username: 'ana', password: 'Secret123', advice_type: 'mortgage_protection' });
   assert.equal(reg.status, 200);
-  const ana = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'ana');
-  await newcastle.post('adminUserApprove', { id: ana.id, role: 'administrator', office_id: officeId.Nottingham });
+  const ana = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'ana');
+  await admin.post('adminUserApprove', { id: ana.id, role: 'administrator', office_id: officeId.Nottingham });
   nottAdminId = ana.id;
   const lead = await nottingham.save('leads', { first_name: 'Priya', last_name: 'Shah', phone: '07700 900111', email: 'priya@example.com', enquiry_type: 'ftb', source: 'introducer', timescale: 'asap', loan_amount: 260000, property_value: 300000, adviser_id: samId, administrator_id: nottAdminId });
   leadId = lead.id;
   assert.equal(lead.rating, 'HOT');
   assert.equal((await london.get('get', { entity: 'leads', id: leadId })).status, 404, 'London cannot open a Nottingham lead');
-  assert.equal((await newcastle.get('get', { entity: 'leads', id: leadId })).status, 404, 'Newcastle sees its own office unless it switches');
-  await newcastle.post('switchOffice', { office_id: officeId.Nottingham });
-  assert.equal((await newcastle.get('get', { entity: 'leads', id: leadId })).status, 200);
-  await newcastle.post('switchOffice', { office_id: officeId.Newcastle });
+  assert.equal((await newcastle.get('get', { entity: 'leads', id: leadId })).status, 404, 'Newcastle is an office like the others');
+  assert.equal((await newcastle.post('switchOffice', { office_id: officeId.Nottingham })).status, 403, 'and cannot switch into another office');
   const tasks = (await nottingham.get('list', { entity: 'tasks', lead_id: leadId })).json.rows;
   assert.ok(tasks.some((t) => t.auto_key === `leadcontact:${leadId}` && t.assigned_to === samId), 'a new lead creates a contact task for its adviser');
 });
@@ -255,10 +275,10 @@ test('trash: deleting a client takes its cases along, and restore brings them ba
 });
 
 test('General Sales: import with duplicates and no-consent, call queue, hand-over with call history', async () => {
-  const reg = await new Client().post('register', { full_name: 'Gus Sales', email: 'gus@themaap.co.uk', username: 'gus', password: 'Secret123', role: 'sales' });
+  const reg = await new Client().post('register', { full_name: 'Gus Sales', email: 'gus@themaap.co.uk', username: 'gus', password: 'Secret123', advice_type: 'mortgage_protection' });
   assert.equal(reg.status, 200, reg.text);
-  const gusRow = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'gus');
-  await newcastle.post('adminUserApprove', { id: gusRow.id, role: 'sales', office_id: 0 });
+  const gusRow = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'gus');
+  assert.equal((await admin.post('adminUserApprove', { id: gusRow.id, role: 'sales', office_id: 0 })).status, 200);
   const gus = new Client();
   await gus.login('gus', 'Secret123');
   assert.equal((await gus.get('list', { entity: 'clients' })).status, 403, 'General Sales cannot see client files');
@@ -324,8 +344,8 @@ test('audit log records who did what; backups download as JSON', async () => {
 });
 
 test('temporary passwords must be changed before anything else', async () => {
-  const id = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'ana').id;
-  const r = await newcastle.post('adminUserReset', { id });
+  const id = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'ana').id;
+  const r = await admin.post('adminUserReset', { id });
   const temp = r.json.temp_password;
   const ana = new Client();
   const u = await ana.login('ana', temp);
@@ -335,34 +355,35 @@ test('temporary passwords must be changed before anything else', async () => {
   assert.equal((await ana.get('dashboard')).status, 200);
 });
 
-test('the recovery code resets the Newcastle password once', async () => {
-  // Read the first-run code the way Newcastle sees it at first sign-in.
-  const code = (await newcastle.get('status')).json.recovery_code;
+test('the recovery code resets the admin password once', async () => {
+  // Read the first-run code the way the admin sees it at first sign-in (in the admin panel).
+  assert.equal((await newcastle.get('status')).json.recovery_code, undefined, 'office logins never see it');
+  const code = (await admin.get('status')).json.recovery_code;
   assert.match(code, /^MAP-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
   const anon = new Client();
-  assert.equal((await anon.post('recover', { username: 'nottingham', code, new_password: 'Changed123' })).status, 401, 'only resets a system admin login');
-  assert.equal((await anon.post('recover', { username: 'newcastle', code, new_password: 'Changed123' })).status, 200);
-  assert.equal((await anon.post('recover', { username: 'newcastle', code, new_password: 'Changed456' })).status, 401, 'a code works once');
-  await new Client().login('newcastle', 'Changed123');
+  assert.equal((await anon.post('recover', { username: 'newcastle', code, new_password: 'Changed123' })).status, 401, 'only resets the admin login');
+  assert.equal((await anon.post('recover', { username: 'admin', code, new_password: 'Changed123' })).status, 200);
+  assert.equal((await anon.post('recover', { username: 'admin', code, new_password: 'Changed456' })).status, 401, 'a code works once');
+  await new Client().login('admin', 'Changed123');
 });
 
 test('security: quoted or look-alike addresses cannot request an account', async () => {
   for (const email of ['"attacker@evil.com"@themaap.co.uk', 'x y@themaap.co.uk', 'x@sub.themaap.co.uk', 'x@themaap.co.uk.evil.com', 'x@themaap.co.ukx']) {
-    const r = await new Client().post('register', { full_name: 'Eve Bad', email, username: 'eve' + Math.floor(Math.random() * 1e6), password: 'Secret123', office_id: officeId.London, role: 'adviser' });
+    const r = await new Client().post('register', { full_name: 'Eve Bad', email, username: 'eve' + Math.floor(Math.random() * 1e6), password: 'Secret123', advice_type: 'protection' });
     assert.equal(r.status, 400, `${email} should be refused`);
   }
 });
 
 test('security: staff of a closed office are not moved into another office', async () => {
-  await newcastle.login('newcastle', 'Changed123'); // the recovery-code test above changed this password
-  const office = (await newcastle.post('adminOfficeSave', { name: 'Leeds', address: '', phone: '', active: true })).json.id;
-  await new Client().post('register', { full_name: 'Lee Ward', email: 'lee.ward@themaap.co.uk', username: 'lee.ward', password: 'Secret123', office_id: office, role: 'manager' });
-  const lee = (await newcastle.get('adminUsers')).json.rows.find((u) => u.username === 'lee.ward');
-  await newcastle.post('adminUserApprove', { id: lee.id, role: 'manager', office_id: office });
+  await admin.login('admin', 'Changed123'); // the recovery-code test above changed this password
+  const office = (await admin.post('adminOfficeSave', { name: 'Leeds', address: '', phone: '', active: true })).json.id;
+  await new Client().post('register', { full_name: 'Lee Ward', email: 'lee.ward@themaap.co.uk', username: 'lee.ward', password: 'Secret123', advice_type: 'mortgage_protection' });
+  const lee = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'lee.ward');
+  await admin.post('adminUserApprove', { id: lee.id, role: 'manager', office_id: office });
   const c = new Client();
   await c.login('lee.ward', 'Secret123');
   assert.equal((await c.get('list', { entity: 'clients' })).status, 200);
-  await newcastle.post('adminOfficeSave', { id: office, name: 'Leeds', address: '', phone: '', active: false });
+  await admin.post('adminOfficeSave', { id: office, name: 'Leeds', address: '', phone: '', active: false });
   assert.equal((await c.get('list', { entity: 'clients' })).status, 401, 'signed out when the office closes');
   await c.login('lee.ward', 'Secret123');
   const r = await c.get('list', { entity: 'clients' });
@@ -395,4 +416,90 @@ test('security: GDPR erasure also scrubs policy, task and lookup history', async
   assert.ok(!/Gdpr Person/.test(nott), 'no audit line still names the person');
   const lon = JSON.stringify((await london.get('audit', { q: '' })).json.rows);
   assert.ok(!/surname "Person"/.test(lon), 'lookups for the surname are scrubbed');
+});
+
+test('protection-only advisers see nothing to do with mortgages', async () => {
+  // London has a mortgage client with a case, set up by the office login.
+  const cl = await london.save('clients', { first_name: 'Mo', last_name: 'Gage', adviser_id: null });
+  const k = await london.save('cases', { client_id: cl.id, case_type: 'ftb', stage: 'application', loan_amount: 210000, lender: 'Halifax' });
+  await london.save('policies', { client_id: cl.id, policy_type: 'life', status: 'on_risk', premium: 20, commission: 400, start_date: new Date().toISOString().slice(0, 10) });
+  const reg = await new Client().post('register', { full_name: 'Pat Cover', email: 'pat.cover@themaap.co.uk', username: 'pat.cover', password: 'Secret123', advice_type: 'protection' });
+  assert.equal(reg.status, 200, reg.text);
+  assert.match(mails().at(-1).body, /Protection only/);
+  const row = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'pat.cover');
+  assert.equal(row.advice_type, 'protection');
+  assert.equal((await admin.post('adminUserApprove', { id: row.id, role: 'adviser', office_id: officeId.London, advice_type: 'protection' })).status, 200);
+  const pat = new Client();
+  const me = await pat.login('pat.cover', 'Secret123');
+  assert.equal(me.protection_only, true);
+  for (const action of ['pipeline', 'radar', 'compliance', 'documents']) {
+    const r = await pat.get(action);
+    assert.equal(r.status, 403, `${action} is mortgage work`);
+    assert.equal(r.json.code, 'protection_only');
+  }
+  assert.equal((await pat.get('lookup', { surname: 'gage' })).status, 403);
+  assert.equal((await pat.get('list', { entity: 'cases' })).status, 403);
+  assert.equal((await pat.get('get', { entity: 'cases', id: k.id })).status, 403);
+  assert.equal((await pat.post('save', { entity: 'cases', id: 0, data: { client_id: cl.id, case_type: 'ftb' } })).status, 403);
+  assert.equal((await pat.get('list', { entity: 'documents' })).status, 403);
+  assert.equal((await pat.post('importRows', { entity: 'cases', rows: [] })).status, 403);
+  const client = (await pat.get('get', { entity: 'clients', id: cl.id })).json;
+  assert.deepEqual(client.cases, [], 'the client file shows no mortgage cases');
+  assert.equal(client.policies.length, 1, 'but does show their cover');
+  const dash = (await pat.get('dashboard')).json;
+  assert.equal(dash.mode, 'protection');
+  assert.ok(!('remortgage_6m' in dash.kpis) && !('active_cases' in dash.kpis));
+  assert.ok('policies_in_force' in dash.kpis);
+  const rep = (await pat.get('reports')).json;
+  assert.deepEqual(rep.pipeline, []);
+  assert.deepEqual(rep.months, []);
+  assert.ok(rep.revenue.every((r) => r.completions === 0 && r.lent === 0 && r.proc_fees === 0 && r.total === r.commission));
+  assert.ok(!(await pat.get('opportunities', { status: 'open' })).json.rows.some((o) => o.type === 'remortgage'));
+  const mortgageLead = await pat.post('save', { entity: 'leads', id: 0, data: { first_name: 'Ray', last_name: 'Mort', phone: '07700 900321', enquiry_type: 'ftb' } });
+  assert.equal(mortgageLead.status, 400, 'mortgage enquiries are not offered');
+  const lead = await pat.save('leads', { first_name: 'Ray', last_name: 'Cover', phone: '07700 900322', enquiry_type: 'protection' });
+  const conv = await pat.post('convertLead', { id: lead.id, create_case: true });
+  assert.equal(conv.status, 200, conv.text);
+  assert.ok(conv.json.client_id);
+  assert.ok(!conv.json.case_id, 'converting a lead never opens a mortgage case');
+  const search = (await pat.get('search', { q: 'Gage' })).json.results;
+  assert.ok(search.some((r) => r.type === 'client'), 'search still finds the client');
+  assert.ok(!(await pat.get('search', { q: 'Halifax' })).json.results.some((r) => r.type === 'case'), 'but no mortgage cases');
+  assert.ok((await london.get('search', { q: 'Halifax' })).json.results.some((r) => r.type === 'case'));
+  // Mortgage leads and anything linked to a case stay out of sight.
+  const mLead = await london.save('leads', { first_name: 'Remy', last_name: 'Mover', phone: '07700 900323', enquiry_type: 'home_mover' });
+  await london.save('tasks', { title: 'Chase the valuation for Mo Gage', case_id: k.id, client_id: cl.id, due_date: new Date().toISOString().slice(0, 10) });
+  await london.post('addActivity', { client_id: cl.id, case_id: k.id, type: 'note', summary: 'Halifax offer issued' });
+  assert.equal((await pat.get('get', { entity: 'leads', id: mLead.id })).status, 404);
+  assert.ok(!(await pat.get('list', { entity: 'leads', status: 'all' })).json.rows.some((l) => l.id === mLead.id));
+  assert.ok(!(await pat.get('list', { entity: 'tasks' })).json.rows.some((t) => t.case_id), 'no case tasks');
+  assert.ok(!(await pat.get('list', { entity: 'tasks' })).json.rows.some((t) => t.lead_id === mLead.id), 'no tasks for mortgage leads');
+  const file = (await pat.get('get', { entity: 'clients', id: cl.id })).json;
+  assert.ok(!file.activities.some((a) => a.case_id) && !file.tasks.some((t) => t.case_id));
+  assert.equal((await pat.post('addActivity', { client_id: cl.id, case_id: k.id, type: 'note', summary: 'x' })).status, 404);
+  assert.ok((await london.get('list', { entity: 'tasks' })).json.rows.some((t) => t.case_id === k.id), 'the office login still has them');
+  // The London office login still sees everything.
+  assert.equal((await london.get('get', { entity: 'cases', id: k.id })).status, 200);
+  assert.equal((await london.get('dashboard')).json.mode, undefined);
+});
+
+test('the admin login manages logins: add, edit advice type, switch off', async () => {
+  const add = await admin.post('adminUserSave', { full_name: 'Nia Brook', email: 'nia.brook@themaap.co.uk', username: 'nia.brook', role: 'adviser', office_id: officeId.Newcastle, advice_type: 'protection', status: 'active' });
+  assert.equal(add.status, 200, add.text);
+  assert.ok(add.json.temp_password);
+  assert.equal(add.json.user.advice_type, 'protection');
+  const bad = await admin.post('adminUserSave', { full_name: 'Nia Brook', email: 'nia@gmail.com', username: 'nia2', role: 'adviser', office_id: officeId.Newcastle, advice_type: 'protection' });
+  assert.equal(bad.status, 400, 'only MAP emails');
+  const id = add.json.user.id;
+  const edit = await admin.post('adminUserSave', { id, full_name: 'Nia Brook', email: 'nia.brook@themaap.co.uk', username: 'nia.brook', role: 'adviser', office_id: officeId.Newcastle, advice_type: 'mortgage_protection', status: 'disabled' });
+  assert.equal(edit.status, 200, edit.text);
+  assert.equal(edit.json.user.advice_type, 'mortgage_protection');
+  assert.equal((await new Client().post('login', { username: 'nia.brook', password: add.json.temp_password })).json.code, 'disabled');
+  const adminRow = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'admin');
+  const self = await admin.post('adminUserSave', { id: adminRow.id, full_name: adminRow.full_name, email: '', username: 'admin', role: 'webadmin', office_id: 0, advice_type: 'mortgage_protection', status: 'disabled' });
+  assert.equal(self.status, 409, 'the admin cannot switch off their own login');
+  const settings = (await admin.get('adminSettings')).json;
+  assert.ok(!('require_approval' in settings), 'every request needs approval: there is no switch to turn it off');
+  const team = (await newcastle.get('team')).json;
+  assert.ok(!JSON.stringify(team).includes('Newcastle Office'), 'office logins are not counted as team members');
 });
