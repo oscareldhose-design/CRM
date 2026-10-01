@@ -170,7 +170,7 @@ function renderShell() {
     : h`<div class="office-chip">${icon(me.role === 'sales' ? 'megaphone' : 'building')}<div><span class="tiny muted">${me.role === 'sales' ? 'Team' : 'Office'}</span><b>${me.role === 'sales' ? 'General Sales' : S.officeName}</b></div></div>`;
   setHTML($('#app'), h`
     <aside class="sidebar" id="sidebar" aria-label="Main menu">
-      <a class="brand" href="#/${me.role === 'sales' ? 'sales' : 'dashboard'}"><img src="assets/map-logo.svg" alt="MAP" width="44" height="47"><div><div class="b-name">MAP Operating System</div><div class="b-sub">Your way home</div></div></a>
+      <a class="brand" href="#/${me.role === 'sales' ? 'sales' : 'dashboard'}" aria-label="MAP: go to the start page"><img src="assets/map-logo.svg" alt="MAP" width="56" height="60"></a>
       ${officeChip}
       <nav class="nav" id="nav">${navGroups().map((g) => h`<div class="nav-group"><div class="nav-label">${g.label}</div>
         ${g.items.map(([path, text, ic]) => h`<a href="#/${path}" data-nav="${path}">${icon(ic)}<span>${text}</span>${path === 'admin' ? raw('<span class="count" data-pending hidden></span>') : ''}</a>`)}</div>`)}</nav>

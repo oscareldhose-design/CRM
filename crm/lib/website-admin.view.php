@@ -121,7 +121,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		}
 		.sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 18px 20px 16px; border-bottom: 1px solid var(--border); text-decoration: none; }
 		.brand-icon { flex: none; display: grid; place-items: center; }
-		.brand-icon img { height: 46px; width: auto; display: block; }
+		.brand-icon img { height: 56px; width: auto; display: block; }
 		body.dark-mode .brand-icon img { background: #fff; border-radius: 12px; padding: 4px 6px; }
 		.brand-text { line-height: 1.15; }
 		.brand-name { font-family: var(--font-display); font-weight: 800; font-size: 16px; color: var(--text); }
@@ -347,11 +347,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 	<!-- ═══ SIDEBAR ═══ -->
 	<aside class="admin-sidebar" id="adminSidebar" aria-label="Admin menu">
 		<div class="sidebar-brand">
-			<div class="brand-icon"><img src="{{CRM_BASE}}assets/map-logo.svg" alt="MAP" width="43" height="46"></div>
-			<div class="brand-text">
-				<div class="brand-name">Website Admin</div>
-				<div class="brand-sub">Control Room</div>
-			</div>
+			<div class="brand-icon"><img src="{{CRM_BASE}}assets/map-logo.svg" alt="MAP" width="56" height="60"></div>
 		</div>
 
 		<div class="sidebar-scroll">
