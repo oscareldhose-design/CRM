@@ -336,6 +336,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		/* ---------- CRM logins ---------- */
 		.tab-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; margin-left: 6px; border-radius: 999px; background: var(--p); color: #fff; font-size: 11px; font-weight: 800; }
 		.tab-btn.active .tab-count { background: rgba(255, 255, 255, .3); }
+		.tab-count[hidden] { display: none; }
 		.crm-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 18px; border-radius: var(--r2); background: var(--p-soft); border: 1.5px solid rgba(163, 8, 163, .3); color: var(--text); font-weight: 600; }
 		.crm-notice[hidden] { display: none; }
 		.crm-notice .btn { min-height: 36px; padding: 0 16px; font-size: 13px; }
@@ -371,9 +372,10 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 <div class="blob blob-2"></div>
 <div class="blob blob-3"></div>
 
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-
 <div class="admin-wrap">
+
+	<!-- Inside .admin-wrap (its own stacking layer) so the open sidebar sits above the dimmed overlay on phones. -->
+	<div class="sidebar-overlay" id="sidebarOverlay"></div>
 
 	<!-- ═══ SIDEBAR ═══ -->
 	<aside class="admin-sidebar" id="adminSidebar" aria-label="Admin menu">
@@ -564,8 +566,9 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 						<div class="field half"><label for="crmTeamThreshold">Team workload limit (points)</label><input id="crmTeamThreshold" name="team_threshold" type="number" min="5" max="200" inputmode="numeric"><div class="key-hint" style="margin-top:0">Someone is "overloaded" at this many points. Live case = 1, open task = 0.5, overdue task = 2.</div></div>
 						<div class="field half"><label for="crmQuietDays">A case has "gone quiet" after (days)</label><input id="crmQuietDays" name="quiet_days" type="number" min="3" max="90" inputmode="numeric"></div>
 					</form>
-					<div class="actions"><button class="btn primary" type="submit" form="crmSettingsForm" id="crmSettingsSave">Save settings</button></div>
+					<div class="actions"><button class="btn primary" type="submit" form="crmSettingsForm" id="crmSettingsSave">Save settings</button><button class="btn ghost" type="button" id="crmTestEmailBtn">✉️ Send a test email</button></div>
 					<div class="status" id="crmSettingsStatus"></div>
+					<div class="key-hint">"Send a test email" checks that emails about new login requests reach info@themaap.co.uk.</div>
 					<div class="key-hint" id="crmServerInfo"></div>
 				</div>
 			</section>
@@ -587,9 +590,10 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 							<div class="adm-form-header">Backups</div>
 							<p class="muted">Download a copy of every office's CRM data. Backups contain client details, so keep them somewhere safe.</p>
 							<div class="row-actions">
-								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminBackupAll">⬇️ Every office (JSON)</a>
-								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminDatabase">🗄️ Database file (.sqlite)</a>
+								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminBackupAll" data-download>⬇️ Every office (JSON)</a>
+								<a class="btn ghost" href="{{CRM_BASE}}api.php?action=adminDatabase" data-download>🗄️ Database file (.sqlite)</a>
 							</div>
+							<div class="status" id="crmBackupStatus"></div>
 						</div>
 					</div>
 					<div class="adm-section-divider">How logins are protected</div>

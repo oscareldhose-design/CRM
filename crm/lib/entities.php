@@ -8,6 +8,7 @@ if (!defined('MAP_CRM')) {
 /**
  * Field types: text (max length), long (notes), email, phone, date, money, num, int, bool,
  * enum (list name from crm_enums), ref (table in the same office), user (staff member).
+ * 'req': must be filled in. 'keep': the list always holds a value, so a blank choice on an edit keeps the current one.
  */
 function crm_entity_defs()
 {
@@ -17,7 +18,7 @@ function crm_entity_defs()
             'enquiry_type' => ['enum', 'enquiry_type'], 'source' => ['enum', 'source'], 'introducer_id' => ['ref', 'introducers'],
             'loan_amount' => ['money'], 'property_value' => ['money'], 'deposit' => ['money'], 'timescale' => ['enum', 'timescale'],
             'credit_issues' => ['enum', 'credit_issues'], 'employment' => ['enum', 'employment'], 'notes' => ['long'],
-            'status' => ['enum', 'lead_status'], 'adviser_id' => ['user'], 'administrator_id' => ['user'], 'lost_reason' => ['text', 200],
+            'status' => ['enum', 'lead_status', 'keep'], 'adviser_id' => ['user'], 'administrator_id' => ['user'], 'lost_reason' => ['text', 200],
         ], 'search' => ['first_name', 'last_name', 'email', 'phone']],
         'clients' => ['label' => 'Client', 'fields' => [
             'title' => ['enum', 'title'], 'first_name' => ['text', 80, 'req'], 'last_name' => ['text', 80, 'req'], 'dob' => ['date'],
@@ -29,8 +30,8 @@ function crm_entity_defs()
             'next_review_date' => ['date'], 'marketing_consent' => ['bool'], 'notes' => ['long'],
         ], 'search' => ['first_name', 'last_name', 'email', 'phone', 'postcode']],
         'cases' => ['label' => 'Mortgage case', 'fields' => [
-            'client_id' => ['ref', 'clients', 'req'], 'case_type' => ['enum', 'case_type', 'req'], 'stage' => ['enum', 'stage'],
-            'status' => ['enum', 'case_status'], 'lender' => ['text', 80], 'product' => ['text', 120], 'loan_amount' => ['money'],
+            'client_id' => ['ref', 'clients', 'req'], 'case_type' => ['enum', 'case_type', 'req'], 'stage' => ['enum', 'stage', 'keep'],
+            'status' => ['enum', 'case_status', 'keep'], 'lender' => ['text', 80], 'product' => ['text', 120], 'loan_amount' => ['money'],
             'property_value' => ['money'], 'property_address' => ['text', 300], 'rate' => ['num'], 'rate_type' => ['enum', 'rate_type'],
             'fixed_term_years' => ['int'], 'fixed_rate_end_date' => ['date'], 'term_years' => ['int'], 'application_date' => ['date'],
             'offer_date' => ['date'], 'offer_expiry_date' => ['date'], 'expected_completion_date' => ['date'], 'completion_date' => ['date'],
@@ -40,18 +41,18 @@ function crm_entity_defs()
         ], 'search' => ['lender', 'property_address', 'product']],
         'policies' => ['label' => 'Policy', 'fields' => [
             'client_id' => ['ref', 'clients', 'req'], 'case_id' => ['ref', 'cases'], 'policy_type' => ['enum', 'policy_type', 'req'],
-            'provider' => ['text', 80], 'policy_number' => ['text', 60], 'status' => ['enum', 'policy_status'], 'premium' => ['money'],
+            'provider' => ['text', 80], 'policy_number' => ['text', 60], 'status' => ['enum', 'policy_status', 'keep'], 'premium' => ['money'],
             'sum_assured' => ['money'], 'term_years' => ['int'], 'quote_date' => ['date'], 'start_date' => ['date'],
             'renewal_date' => ['date'], 'commission' => ['money'], 'adviser_id' => ['user'], 'notes' => ['long'],
         ], 'search' => ['provider', 'policy_number']],
         'tasks' => ['label' => 'Task', 'fields' => [
-            'title' => ['text', 200, 'req'], 'notes' => ['long'], 'due_date' => ['date'], 'priority' => ['enum', 'task_priority'],
-            'status' => ['enum', 'task_status'], 'assigned_to' => ['user'], 'client_id' => ['ref', 'clients'], 'lead_id' => ['ref', 'leads'],
+            'title' => ['text', 200, 'req'], 'notes' => ['long'], 'due_date' => ['date'], 'priority' => ['enum', 'task_priority', 'keep'],
+            'status' => ['enum', 'task_status', 'keep'], 'assigned_to' => ['user'], 'client_id' => ['ref', 'clients'], 'lead_id' => ['ref', 'leads'],
             'case_id' => ['ref', 'cases'], 'policy_id' => ['ref', 'policies'],
         ], 'search' => ['title', 'notes']],
         'documents' => ['label' => 'Document', 'fields' => [
             'case_id' => ['ref', 'cases'], 'client_id' => ['ref', 'clients'], 'name' => ['text', 120, 'req'],
-            'status' => ['enum', 'document_status'], 'requested_at' => ['date'], 'received_at' => ['date'], 'expiry_date' => ['date'],
+            'status' => ['enum', 'document_status', 'keep'], 'requested_at' => ['date'], 'received_at' => ['date'], 'expiry_date' => ['date'],
             'notes' => ['text', 500],
         ], 'search' => ['name']],
         'introducers' => ['label' => 'Introducer', 'fields' => [
@@ -138,14 +139,18 @@ function crm_coerce($table, $field, array $spec, $v)
             }
             return (string) $v;
         case 'ref':
+            // Protection-only advisers cannot link their work to mortgage cases or mortgage leads.
             $id = (int) $v;
-            if (!$id || !crm_val('SELECT id FROM ' . $spec[1] . ' WHERE id = ? AND office_id = ? AND deleted_at IS NULL', [$id, crm_office_id()])) {
+            if (!$id || !crm_val('SELECT id FROM ' . $spec[1] . ' WHERE id = ? AND office_id = ? AND deleted_at IS NULL'
+                . crm_protection_and($spec[1], $spec[1]), [$id, crm_office_id()])) {
                 crm_fail(400, 'invalid', 'That linked record could not be found in this office.', $field);
             }
             return $id;
         case 'user':
+            // Staff of this office (a system admin may work in any office); never General Sales or the website admin.
             $id = (int) $v;
-            if (!$id || !crm_val("SELECT id FROM users WHERE id = ? AND status = 'active' AND role <> 'sales'", [$id])) {
+            if (!$id || !crm_val("SELECT id FROM users WHERE id = ? AND status = 'active' AND role IN ('" . implode("','", CRM_OFFICE_ROLES) . "')
+                AND (office_id = ? OR role = 'admin')", [$id, crm_office_id()])) {
                 crm_fail(400, 'invalid', 'Please choose a member of staff from the list.', $field);
             }
             return $id;
@@ -158,13 +163,51 @@ function crm_find($entity, $id, $includeDeleted = false)
 {
     $officeId = crm_office_id();
     $sql = $entity === 'templates'
-        ? 'SELECT * FROM templates WHERE id = ? AND (office_id = ? OR office_id IS NULL)'
+        ? 'SELECT * FROM templates WHERE id = ? AND (office_id = ? OR office_id IS NULL)' . crm_templates_protection_and('templates')
         : 'SELECT * FROM ' . $entity . ' WHERE id = ? AND office_id = ?';
     if (!$includeDeleted) {
         $sql .= ' AND deleted_at IS NULL';
     }
     $sql .= crm_protection_and($entity, $entity);
     return crm_one($sql, [(int) $id, $officeId]);
+}
+
+/**
+ * For protection-only advisers: leaves mortgage email templates out of a query on templates ($a is the table name or
+ * alias): any category with "mortgage" in it (Mortgage, Remortgage, Mortgage offers…) or starting with "case".
+ * Returns '' for everyone else.
+ */
+function crm_templates_protection_and($a)
+{
+    if (!crm_protection_only()) {
+        return '';
+    }
+    return " AND COALESCE($a.category, '') NOT LIKE '%mortgage%' AND COALESCE($a.category, '') NOT LIKE 'case%'";
+}
+
+/** For values copied from another record: the staff member or linked record while it is still valid here, else null. */
+function crm_entity_still_valid($entity, $field, $value)
+{
+    if (!$value) {
+        return null;
+    }
+    try {
+        return crm_coerce($entity, $field, crm_entity($entity)['fields'][$field], $value);
+    } catch (CrmError $e) {
+        return null;
+    }
+}
+
+/** Writes the audit line for a record. A template shared by every office is logged in every office's audit log. */
+function crm_entity_audit($action, $entity, $id, $summary, array $record, $changes = null)
+{
+    if ($entity === 'templates' && $record['office_id'] === null) {
+        foreach (crm_all('SELECT id FROM offices WHERE active = 1') as $o) {
+            crm_audit($action, $entity, $id, $summary . ' (shared with every office)', $changes, (int) $o['id']);
+        }
+        return;
+    }
+    crm_audit($action, $entity, $id, $summary, $changes);
 }
 
 function crm_must_find($entity, $id, $includeDeleted = false)
@@ -226,15 +269,7 @@ function crm_save_record($entity, $id, array $data, $version = null, $global = f
     $def = crm_entity($entity);
     $officeId = crm_office_id();
     $u = crm_user();
-    $row = [];
-    foreach ($def['fields'] as $f => $spec) {
-        if (array_key_exists($f, $data)) {
-            $row[$f] = crm_coerce($entity, $f, $spec, $data[$f]);
-        } elseif (!$id && in_array('req', $spec, true)) {
-            crm_fail(400, 'invalid', 'This field is required.', $f);
-        }
-    }
-    return crm_tx(function () use ($entity, $id, $row, $version, $officeId, $u, $global) {
+    return crm_tx(function () use ($entity, $def, $id, $data, $version, $officeId, $u, $global) {
         $before = null;
         if ($id) {
             $before = crm_must_find($entity, $id);
@@ -249,6 +284,24 @@ function crm_save_record($entity, $id, array $data, $version = null, $global = f
                 crm_fail(403, 'forbidden', 'Shared templates can only be changed by an office manager.');
             }
         }
+        $row = [];
+        foreach ($def['fields'] as $f => $spec) {
+            if (!array_key_exists($f, $data)) {
+                if (!$before && in_array('req', $spec, true)) {
+                    crm_fail(400, 'invalid', 'This field is required.', $f);
+                }
+                continue;
+            }
+            $v = is_string($data[$f]) ? trim($data[$f]) : $data[$f];
+            if ($before && ($v === '' || $v === null) && in_array('keep', $spec, true)) {
+                continue;   // a blank status, stage or priority on an edit keeps the current one
+            }
+            if ($before && in_array($spec[0], ['ref', 'user'], true) && $before[$f] !== null && is_scalar($v) && (int) $v === (int) $before[$f]) {
+                $row[$f] = (int) $before[$f];   // unchanged link: still fine if that person has since left or the record is in the trash
+                continue;
+            }
+            $row[$f] = crm_coerce($entity, $f, $spec, $v);
+        }
         $row = crm_prepare_row($entity, $row, $before);
         $now = crm_now();
         if (!$before) {
@@ -260,7 +313,7 @@ function crm_save_record($entity, $id, array $data, $version = null, $global = f
             $newId = crm_insert($entity, $row);
             $after = crm_one('SELECT * FROM ' . $entity . ' WHERE id = ?', [$newId]);
             crm_after_save($entity, null, $after);
-            crm_audit('create', $entity, $newId, 'Added ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $after));
+            crm_entity_audit('create', $entity, $newId, 'Added ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $after), $after);
             return $after;
         }
         $changes = [];
@@ -283,7 +336,7 @@ function crm_save_record($entity, $id, array $data, $version = null, $global = f
         crm_update_row($entity, (int) $before['id'], $upd);
         $after = crm_one('SELECT * FROM ' . $entity . ' WHERE id = ?', [$before['id']]);
         crm_after_save($entity, $before, $after);
-        crm_audit('update', $entity, (int) $before['id'], 'Updated ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $after), $changes);
+        crm_entity_audit('update', $entity, (int) $before['id'], 'Updated ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $after), $after, $changes);
         return $after;
     });
 }
@@ -309,7 +362,8 @@ function crm_prepare_row($entity, array $row, $before)
             if ($status === 'lost' && (!$before || $before['status'] !== 'lost')) {
                 $row['lost_at'] = crm_now();
             }
-            if ($status === 'converted' && (!$before || empty($before['client_id']))) {
+            // Only "Convert to client" makes a lead converted. A converted lead stays editable, even after its client is purged.
+            if ($status === 'converted' && (!$before || ($before['status'] !== 'converted' && empty($before['client_id'])))) {
                 crm_fail(400, 'invalid', 'Use "Convert to client" to convert a lead.', 'status');
             }
             break;
@@ -463,7 +517,7 @@ function crm_action_list()
     $where = [];
     $p = [];
     $today = crm_today();
-    $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $q) . '%';
+    $like = '%' . crm_views_like_escape($q) . '%';
 
     switch ($entity) {
         case 'leads':
@@ -491,11 +545,12 @@ function crm_action_list()
             $order = " ORDER BY CASE l.rating WHEN 'HOT' THEN 0 WHEN 'WARM' THEN 1 ELSE 2 END, l.created_at DESC";
             break;
         case 'clients':
-            $sql = "SELECT c.*,
-                (SELECT COUNT(*) FROM cases k WHERE k.client_id = c.id AND k.deleted_at IS NULL AND k.status = 'active') AS active_cases,
-                (SELECT COUNT(*) FROM policies p WHERE p.client_id = c.id AND p.deleted_at IS NULL AND p.status = 'on_risk') AS policies_in_force,
-                (SELECT MAX(a.created_at) FROM activities a WHERE a.client_id = c.id AND a.deleted_at IS NULL AND a.type <> 'system') AS last_contact_at
-                FROM clients c WHERE c.office_id = ? AND c.deleted_at IS NULL";
+            // Protection-only advisers get no count of mortgage cases, and their last contact leaves out case activity.
+            $sql = 'SELECT c.*,'
+                . (crm_protection_only() ? '' : " (SELECT COUNT(*) FROM cases k WHERE k.client_id = c.id AND k.deleted_at IS NULL AND k.status = 'active') AS active_cases,")
+                . " (SELECT COUNT(*) FROM policies p WHERE p.client_id = c.id AND p.deleted_at IS NULL AND p.status = 'on_risk') AS policies_in_force,
+                (SELECT MAX(a.created_at) FROM activities a WHERE a.client_id = c.id AND a.deleted_at IS NULL AND a.type <> 'system'" . crm_protection_and('activities', 'a') . ') AS last_contact_at
+                FROM clients c WHERE c.office_id = ? AND c.deleted_at IS NULL';
             $p[] = $officeId;
             if ($mine) {
                 $where[] = '(c.adviser_id = ? OR c.administrator_id = ?)';
@@ -631,11 +686,8 @@ function crm_action_list()
             $order = ' ORDER BY i.name COLLATE NOCASE';
             break;
         case 'templates':
-            $sql = 'SELECT t.* FROM templates t WHERE (t.office_id = ? OR t.office_id IS NULL) AND t.deleted_at IS NULL';
+            $sql = 'SELECT t.* FROM templates t WHERE (t.office_id = ? OR t.office_id IS NULL) AND t.deleted_at IS NULL' . crm_templates_protection_and('t');
             $p[] = $officeId;
-            if (crm_protection_only()) {
-                $where[] = "COALESCE(t.category, '') NOT IN ('Cases', 'Remortgage', 'Mortgage', 'Mortgages')";
-            }
             $order = ' ORDER BY t.category, t.name';
             break;
         default:
@@ -656,6 +708,27 @@ function crm_action_list()
         }
     }
     crm_ok(['rows' => $rows]);
+}
+
+/** Clients in this office with the lead's email or phone number (however the number was spaced or written, e.g. +44). */
+function crm_lead_duplicates(array $lead)
+{
+    $phone = crm_norm_phone($lead['phone']);
+    // Narrow down in SQL by the last 7 digits, then compare the whole normalised number.
+    $digits = "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '+', '')";
+    $rows = crm_all("SELECT id, first_name, last_name, email, phone FROM clients WHERE office_id = ? AND deleted_at IS NULL
+        AND ((email IS NOT NULL AND email = ?) OR (phone IS NOT NULL AND $digits LIKE ?)) ORDER BY id LIMIT 200",
+        [crm_office_id(), $lead['email'], strlen($phone) >= 7 ? '%' . substr($phone, -7) : null]);
+    $out = [];
+    foreach ($rows as $c) {
+        if (($lead['email'] && $c['email'] === $lead['email']) || ($phone !== '' && crm_norm_phone($c['phone']) === $phone)) {
+            $out[] = $c;
+            if (count($out) === 5) {
+                break;
+            }
+        }
+    }
+    return $out;
 }
 
 function crm_activities_where($col, $id)
@@ -683,8 +756,7 @@ function crm_action_get()
         case 'leads':
             $out['activities'] = crm_activities_where('lead_id', $id);
             $out['tasks'] = crm_tasks_where('lead_id', $id);
-            $out['possible_duplicates'] = crm_all("SELECT id, first_name, last_name, email, phone FROM clients WHERE office_id = ? AND deleted_at IS NULL
-                AND ((email IS NOT NULL AND email = ?) OR (phone IS NOT NULL AND phone = ?)) LIMIT 5", [$officeId, $r['email'], $r['phone']]);
+            $out['possible_duplicates'] = crm_lead_duplicates($r);
             if ($r['event_contact_id']) {
                 $out['event_calls'] = crm_all('SELECT outcome, notes, user_name, created_at FROM sales_calls WHERE contact_id = ? ORDER BY created_at', [$r['event_contact_id']]);
             }
@@ -704,11 +776,15 @@ function crm_action_get()
             if (crm_protection_only()) {
                 $out['cases'] = [];
                 $out['documents'] = [];
-                $out['opportunities'] = array_values(array_filter($out['opportunities'], function ($o) {
+                $out['opportunities'] = array_values(array_map(function ($o) {
+                    $o['detail'] = crm_views_opportunity_detail($o);
+                    return $o;
+                }, array_filter($out['opportunities'], function ($o) {
                     return $o['type'] !== 'remortgage';
-                }));
+                })));
             }
-            $out['lead'] = $r['lead_id'] ? crm_one('SELECT id, source, enquiry_type, created_at, score, rating FROM leads WHERE id = ?', [$r['lead_id']]) : null;
+            $out['lead'] = $r['lead_id'] ? crm_one('SELECT id, source, enquiry_type, created_at, score, rating FROM leads WHERE id = ? AND office_id = ?'
+                . crm_protection_and('leads', 'leads'), [$r['lead_id'], $officeId]) : null;
             break;
         case 'cases':
             $out['client'] = crm_one('SELECT * FROM clients WHERE id = ? AND office_id = ?', [$r['client_id'], $officeId]);
@@ -733,7 +809,7 @@ function crm_action_get()
 
 /* ---- Delete, trash, restore ------------------------------------------------------------------- */
 
-/** Records that go to the trash together with their parent. */
+/** Records that go to the trash together with their parent: [table, link column, extra condition (optional)]. */
 function crm_children($entity, $id)
 {
     switch ($entity) {
@@ -742,7 +818,8 @@ function crm_children($entity, $id)
         case 'cases':
             return [['documents', 'case_id'], ['tasks', 'case_id']];
         case 'leads':
-            return [['tasks', 'lead_id']];
+            // A converted lead's tasks moved to its client and stay with the client.
+            return [['tasks', 'lead_id', 'client_id IS NULL']];
         case 'policies':
             return [['tasks', 'policy_id']];
     }
@@ -764,9 +841,10 @@ function crm_action_delete()
         $now = crm_now();
         crm_q('UPDATE ' . $entity . ' SET deleted_at = ?, deleted_by = ? WHERE id = ?', [$now, $u['id'], $id]);
         foreach (crm_children($entity, $id) as $ch) {
-            crm_q('UPDATE ' . $ch[0] . ' SET deleted_at = ?, deleted_by = ? WHERE ' . $ch[1] . ' = ? AND office_id = ? AND deleted_at IS NULL', [$now, $u['id'], $id, crm_office_id()]);
+            crm_q('UPDATE ' . $ch[0] . ' SET deleted_at = ?, deleted_by = ? WHERE ' . $ch[1] . ' = ? AND office_id = ? AND deleted_at IS NULL'
+                . (isset($ch[2]) ? ' AND ' . $ch[2] : ''), [$now, $u['id'], $id, crm_office_id()]);
         }
-        crm_audit('delete', $entity, $id, 'Moved ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $r) . ' to the trash');
+        crm_entity_audit('delete', $entity, $id, 'Moved ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $r) . ' to the trash', $r);
     });
     crm_ok();
 }
@@ -805,7 +883,7 @@ function crm_action_restore()
         foreach (crm_children($entity, $id) as $ch) {
             crm_q('UPDATE ' . $ch[0] . ' SET deleted_at = NULL, deleted_by = NULL WHERE ' . $ch[1] . ' = ? AND office_id = ? AND deleted_at = ?', [$id, crm_office_id(), $r['deleted_at']]);
         }
-        crm_audit('restore', $entity, $id, 'Restored ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $r) . ' from the trash');
+        crm_entity_audit('restore', $entity, $id, 'Restored ' . strtolower(crm_entity($entity)['label']) . ' ' . crm_record_name($entity, $r) . ' from the trash', $r);
     });
     crm_ok();
 }
@@ -823,7 +901,7 @@ function crm_action_purge()
         }
         $name = crm_record_name($entity, $r);
         crm_purge_rows($entity, $id);
-        crm_audit('purge', $entity, $id, 'Permanently deleted ' . strtolower(crm_entity($entity)['label']) . ' ' . $name);
+        crm_entity_audit('purge', $entity, $id, 'Permanently deleted ' . strtolower(crm_entity($entity)['label']) . ' ' . $name, $r);
     });
     crm_ok();
 }
@@ -832,12 +910,18 @@ function crm_purge_rows($entity, $id)
 {
     $office = crm_office_id();
     foreach (crm_children($entity, $id) as $ch) {
-        foreach (crm_all('SELECT id FROM ' . $ch[0] . ' WHERE ' . $ch[1] . ' = ? AND office_id = ?', [$id, $office]) as $child) {
+        foreach (crm_all('SELECT id FROM ' . $ch[0] . ' WHERE ' . $ch[1] . ' = ? AND office_id = ?' . (isset($ch[2]) ? ' AND ' . $ch[2] : ''), [$id, $office]) as $child) {
             crm_purge_rows($ch[0], (int) $child['id']);
         }
     }
     $col = ['clients' => 'client_id', 'cases' => 'case_id', 'leads' => 'lead_id', 'policies' => 'policy_id'];
-    if (isset($col[$entity])) {
+    if ($entity === 'leads') {
+        // Calls, notes and tasks that moved to the client when the lead was converted stay with the client.
+        crm_q('DELETE FROM activities WHERE lead_id = ? AND office_id = ? AND client_id IS NULL', [$id, $office]);
+        crm_q('DELETE FROM tasks WHERE lead_id = ? AND office_id = ? AND client_id IS NULL', [$id, $office]);
+        crm_q('UPDATE activities SET lead_id = NULL WHERE lead_id = ? AND office_id = ?', [$id, $office]);
+        crm_q('UPDATE tasks SET lead_id = NULL WHERE lead_id = ? AND office_id = ?', [$id, $office]);
+    } elseif (isset($col[$entity])) {
         crm_q('DELETE FROM activities WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
         crm_q('DELETE FROM tasks WHERE ' . $col[$entity] . ' = ? AND office_id = ?', [$id, $office]);
         if (in_array($entity, ['clients', 'cases'], true)) {
@@ -890,15 +974,19 @@ function crm_action_convert_lead()
         $policyId = null;
         $types = crm_enums()['case_type'];
         if ($createCase && $l['enquiry_type'] && isset($types[$l['enquiry_type']]) && !crm_protection_only()) {
+            // People and introducers copied from the lead only if still valid (an adviser may have left, an introducer been deleted).
             $case = crm_save_record('cases', 0, [
                 'client_id' => $clientId, 'case_type' => $l['enquiry_type'], 'stage' => 'fact_find',
                 'loan_amount' => $l['loan_amount'], 'property_value' => $l['property_value'],
-                'adviser_id' => $l['adviser_id'], 'administrator_id' => $l['administrator_id'], 'introducer_id' => $l['introducer_id'],
+                'adviser_id' => crm_entity_still_valid('cases', 'adviser_id', $l['adviser_id']),
+                'administrator_id' => crm_entity_still_valid('cases', 'administrator_id', $l['administrator_id']),
+                'introducer_id' => crm_entity_still_valid('cases', 'introducer_id', $l['introducer_id']),
             ]);
             $caseId = (int) $case['id'];
         } elseif ($createCase && in_array($l['enquiry_type'], ['protection', 'insurance', 'business_protection'], true)) {
             $map = ['protection' => 'life', 'insurance' => 'home', 'business_protection' => 'business'];
-            $pol = crm_save_record('policies', 0, ['client_id' => $clientId, 'policy_type' => $map[$l['enquiry_type']], 'status' => 'quote', 'adviser_id' => $l['adviser_id']]);
+            $pol = crm_save_record('policies', 0, ['client_id' => $clientId, 'policy_type' => $map[$l['enquiry_type']], 'status' => 'quote',
+                'adviser_id' => crm_entity_still_valid('policies', 'adviser_id', $l['adviser_id'])]);
             $policyId = (int) $pol['id'];
         }
         crm_insert('activities', [
@@ -1127,8 +1215,11 @@ function crm_action_render_template()
     if (!$person && ($v = crm_in_int('lead_id'))) {
         $person = crm_must_find('leads', $v);
     }
-    if ($person && !$case && isset($person['lead_id'])) {
-        $case = crm_one("SELECT * FROM cases WHERE client_id = ? AND deleted_at IS NULL ORDER BY status = 'active' DESC, created_at DESC LIMIT 1", [$person['id']]);
+    // A client's latest case fills the mortgage details (clients have a lead_id column, even when it is empty; leads don't).
+    // Protection-only advisers never get them.
+    if ($person && !$case && array_key_exists('lead_id', $person)) {
+        $case = crm_one("SELECT * FROM cases WHERE client_id = ? AND office_id = ? AND deleted_at IS NULL" . crm_protection_and('cases', 'cases')
+            . " ORDER BY status = 'active' DESC, created_at DESC LIMIT 1", [$person['id'], crm_office_id()]);
     }
     $adviserId = $case && $case['adviser_id'] ? $case['adviser_id'] : ($person && !empty($person['adviser_id']) ? $person['adviser_id'] : null);
     $adviser = $adviserId ? crm_one('SELECT full_name, email FROM users WHERE id = ?', [$adviserId]) : null;

@@ -3,6 +3,6 @@
   "private": true,
   "description": "MAP Operating System: CRM for The Mortgage Advice Professionals (PHP + SQLite). Node is only used to run the tests.",
   "scripts": {
-    "test": "node --test tests/api.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
   }
 }

@@ -148,6 +148,21 @@ function crm_forbid_mortgage($action)
     }
 }
 
+/* ---- General Sales: a person handed over to an office belongs to that office ------------------- */
+const CRM_SALES_CONTACT_EDITS = ['salesContactSave', 'salesContactDelete', 'salesContactErase'];
+
+/** Office logins and staff may help with General Sales, but can't change, remove or erase people handed to another office. */
+function crm_forbid_other_office_contact($action, array $user)
+{
+    if ($user['role'] === 'sales' || !in_array($action, CRM_SALES_CONTACT_EDITS, true) || !crm_in_int('id')) {
+        return;
+    }
+    $office = crm_val('SELECT handed_office_id FROM event_contacts WHERE id = ?', [crm_in_int('id')]);
+    if ($office !== null && (int) $office !== (int) $user['office_id']) {
+        crm_fail(403, 'other_office', 'This person has been handed over to another office. Only that office or the General Sales team can change them.');
+    }
+}
+
 function crm_require_login()
 {
     $a = crm_current();
@@ -249,6 +264,25 @@ function crm_ip_guard($kind, $max)
     }
 }
 
+/**
+ * Counts an attempt as a failure before it is checked (so attempts sent in parallel can't all get under the limit),
+ * and refuses it if this connection is over the limit. Returns the row to pass to crm_ip_forget() if it succeeds.
+ */
+function crm_ip_attempt($kind, $max)
+{
+    $id = crm_insert('login_failures', ['ip' => crm_client_ip(), 'kind' => $kind, 'at' => time()]);
+    if (crm_ip_failures($kind) > $max) {
+        crm_ip_forget($id);
+        crm_fail(429, 'rate_limited', 'Too many attempts from this connection. Please wait 15 minutes and try again.');
+    }
+    return $id;
+}
+
+function crm_ip_forget($id)
+{
+    crm_q('DELETE FROM login_failures WHERE id = ?', [$id]);
+}
+
 /* ---- Public actions -------------------------------------------------------------------------- */
 
 /** GET status: who is signed in, plus what the sign-in page needs (offices, email domain). */
@@ -284,29 +318,53 @@ function crm_action_login()
     if ($username === '' || !is_string($password) || $password === '') {
         crm_fail(400, 'invalid', 'Enter your username and password.', $username === '' ? 'username' : 'password');
     }
+    // Counted as a failure until the password turns out to be right.
+    $attempt = crm_ip_attempt('login', CRM_IP_MAX_FAILS);
     $u = crm_one('SELECT * FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)', [$username, $username]);
     if (!$u) {
-        password_hash($password, PASSWORD_DEFAULT); // takes as long as a real check, so usernames can't be probed by timing
-        crm_ip_fail('login');
+        password_hash('not a real login', PASSWORD_DEFAULT); // takes as long as a real check, so usernames can't be probed by timing
         crm_audit('login_failed', 'users', null, 'Unknown username: ' . mb_substr($username, 0, 60), null, null);
         crm_fail(401, 'bad_login', 'That username or password is not right.');
     }
-    if ($u['locked_until'] && $u['locked_until'] > crm_now()) {
-        $mins = max(1, (int) ceil((strtotime($u['locked_until']) - time()) / 60));
+    // Take this try from the login's allowance before checking the password, in one write transaction, so wrong
+    // passwords sent in parallel can't all read the same count and get past the lock. 0 means locked.
+    $lockFor = gmdate('Y-m-d\TH:i:s\Z', time() + CRM_LOGIN_LOCK_MINUTES * 60);
+    $try = crm_tx(function () use ($u, $lockFor) {
+        $r = crm_one('SELECT failed_attempts, locked_until FROM users WHERE id = ?', [$u['id']]);
+        if ($r['locked_until'] && $r['locked_until'] > crm_now()) {
+            return 0;
+        }
+        if ((int) $r['failed_attempts'] >= CRM_LOGIN_MAX_FAILS) {
+            // Tries still being checked have used up the allowance.
+            crm_q('UPDATE users SET failed_attempts = 0, locked_until = ? WHERE id = ?', [$lockFor, $u['id']]);
+            return 0;
+        }
+        crm_q('UPDATE users SET failed_attempts = failed_attempts + 1, locked_until = NULL WHERE id = ?', [$u['id']]);
+        return (int) $r['failed_attempts'] + 1;
+    });
+    if (!$try) {
+        crm_ip_forget($attempt);
+        $until = crm_val('SELECT locked_until FROM users WHERE id = ?', [$u['id']]);
+        $mins = max(1, (int) ceil((strtotime((string) $until) - time()) / 60));
         crm_fail(423, 'locked', 'This login is locked after too many wrong passwords. Try again in ' . $mins . ' minute'
-            . ($mins === 1 ? '' : 's') . ', or ask the MAP admin to unlock it.');
+            . ($mins === 1 ? '' : 's') . ($u['role'] === 'webadmin'
+                ? ', or reset the password with your recovery code (Forgot password?).'
+                : ', or ask the MAP admin to unlock it.'));
     }
-    if (!password_verify($password, $u['password_hash'])) {
-        crm_ip_fail('login');
-        $fails = (int) $u['failed_attempts'] + 1;
-        $lock = $fails >= CRM_LOGIN_MAX_FAILS ? gmdate('Y-m-d\TH:i:s\Z', time() + CRM_LOGIN_LOCK_MINUTES * 60) : null;
-        crm_q('UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?', [$lock ? 0 : $fails, $lock, $u['id']]);
+    // (bcrypt ignores anything after a NUL byte, and newer PHP refuses to hash one: never a right password.)
+    if (strpos($password, "\0") !== false || !password_verify($password, $u['password_hash'])) {
+        $lock = $try >= CRM_LOGIN_MAX_FAILS;
+        if ($lock) {
+            crm_q('UPDATE users SET failed_attempts = 0, locked_until = ? WHERE id = ?', [$lockFor, $u['id']]);
+        }
         crm_audit($lock ? 'login_locked' : 'login_failed', 'users', (int) $u['id'], ($lock ? 'Login locked: ' : 'Wrong password for ') . $u['username'], null, $u['office_id']);
         if ($lock) {
             crm_fail(423, 'locked', 'Too many wrong passwords. This login is now locked for ' . CRM_LOGIN_LOCK_MINUTES . ' minutes.');
         }
         crm_fail(401, 'bad_login', 'That username or password is not right.');
     }
+    crm_ip_forget($attempt);
+    crm_q('UPDATE users SET failed_attempts = 0 WHERE id = ?', [$u['id']]);
     if ($u['status'] === 'pending') {
         crm_fail(403, 'pending', 'Your account request is waiting for approval from the MAP admin. You\'ll be able to sign in once it is approved.');
     }
@@ -331,7 +389,7 @@ function crm_action_register()
     $b = crm_body();
     $fullName = crm_in_str('full_name', 80);
     $email = crm_norm_email(crm_in_str('email', 254));
-    $username = strtolower(crm_in_str('username', 32));
+    $username = strtolower(crm_in_str('username', 200)); // longer than 32 is refused below, not cut short
     $password = isset($b['password']) && is_string($b['password']) ? $b['password'] : '';
     $advice = crm_in_str('advice_type', 30);
 
@@ -412,15 +470,16 @@ function crm_action_recover()
     if ($problem) {
         crm_fail(400, 'invalid', $problem, 'new_password');
     }
+    $attempt = crm_ip_attempt('recover', 8); // counted as a failure unless the code is right
     $hash = crm_setting('recovery_hash');
     $u = crm_one("SELECT * FROM users WHERE (username = ? OR email = ?) AND role = 'webadmin' AND status = 'active'", [$username, $username]);
     // Always check the code, so the answer takes as long whether or not the username exists.
     $codeOk = password_verify($code, $hash ?: '$2y$10$kWmT1SZ3tD16ghmG4dMn.O1eOcx4PMdJs.xILaeES.qGej/iy7o6C');
     if (!$hash || !$u || !$codeOk) {
-        crm_ip_fail('recover');
         crm_audit('recovery_failed', 'users', $u ? (int) $u['id'] : null, 'Wrong recovery code attempt', null, $u ? $u['office_id'] : null);
         crm_fail(401, 'bad_code', 'That recovery code or username is not right. The recovery code only resets the admin login.');
     }
+    crm_ip_forget($attempt);
     crm_tx(function () use ($u, $new) {
         crm_q('UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL, must_change_password = 0, password_changed_at = ?, updated_at = ? WHERE id = ?',
             [password_hash($new, PASSWORD_DEFAULT), crm_now(), crm_now(), $u['id']]);

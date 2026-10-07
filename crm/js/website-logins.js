@@ -15,7 +15,7 @@
   var adviceLabel = function (k) { return k === 'protection' ? 'Protection only' : 'Mortgage & protection'; };
   // The whole-office logins (newcastle, nottingham, london). The admin login has no email either, but isn't one.
   var isOffice = function (u) { return !!u.is_office_account && u.role !== 'webadmin'; };
-  var state = { users: [], offices: [], settings: null, pendingKey: '' };
+  var state = { users: [], offices: [], settings: null, pendingKey: '', me: 0 };
 
   /* ---- Helpers ---------------------------------------------------------------------------------- */
   function esc(v) {
@@ -60,9 +60,25 @@
   }
 
   /* ---- Dialog ----------------------------------------------------------------------------------- */
-  var layer = $('crmDialog'), dlgBody = $('crmDialogBody'), dismissable = true, lastFocus = null;
+  var layer = $('crmDialog'), dlgBody = $('crmDialogBody'), dismissable = true, lastFocus = null, lastKey = null;
+  // Lists are re-drawn after most actions, so focus is restored to the same button in the new row (found by data-id).
+  function focusKey(el) {
+    var item = el && el.closest && el.closest('.item[data-id]'), list = item && item.parentElement.closest('[id]');
+    var ctl = item && (el.dataset.act ? '[data-act="' + el.dataset.act + '"]' : el.dataset.f ? '[data-f="' + el.dataset.f + '"]' : '');
+    return ctl && list ? { list: list.id, id: item.dataset.id, ctl: ctl } : null;
+  }
+  function refocus(key) {
+    var list = key && $(key.list), el = list && list.querySelector('.item[data-id="' + key.id + '"] ' + key.ctl);
+    if (el && !el.disabled) el.focus();
+    return !!el;
+  }
+  function redraw(el, html) {
+    var key = el.contains(document.activeElement) ? focusKey(document.activeElement) : null;
+    el.innerHTML = html;
+    if (key && !refocus(key)) { var next = el.querySelector('button, select, input'); if (next) next.focus(); }
+  }
   function openDialog(title, html, locked) {
-    lastFocus = document.activeElement;
+    if (!layer.classList.contains('show')) { lastFocus = document.activeElement; lastKey = focusKey(lastFocus); }
     dismissable = !locked;
     $('crmDialogTitle').textContent = title;
     dlgBody.innerHTML = html;
@@ -73,7 +89,8 @@
   function closeDialog() {
     layer.classList.remove('show');
     dlgBody.innerHTML = '';
-    if (lastFocus && lastFocus.focus) lastFocus.focus();
+    if (lastFocus && lastFocus.focus && document.contains(lastFocus)) lastFocus.focus();
+    else refocus(lastKey);
   }
   layer.addEventListener('mousedown', function (e) { if (e.target === layer && dismissable) closeDialog(); });
   layer.addEventListener('click', function (e) {
@@ -86,7 +103,17 @@
       else selectCode();
     }
   });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && layer.classList.contains('show') && dismissable) closeDialog(); });
+  document.addEventListener('keydown', function (e) {
+    if (!layer.classList.contains('show')) return;
+    if (e.key === 'Escape' && dismissable) closeDialog();
+    if (e.key !== 'Tab') return;
+    // Keep keyboard focus inside the dialog while it is open.
+    var els = [].filter.call(layer.querySelectorAll('button, input, select, textarea, a[href]'), function (x) { return !x.disabled && x.offsetParent !== null; });
+    if (!els.length) return;
+    var first = els[0], last = els[els.length - 1], inside = layer.contains(document.activeElement);
+    if (e.shiftKey && (!inside || document.activeElement === first)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (!inside || document.activeElement === last)) { e.preventDefault(); first.focus(); }
+  });
   function selectCode() {
     var code = dlgBody.querySelector('.crm-code');
     if (code && window.getSelection) { var r = document.createRange(); r.selectNodeContents(code); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); }
@@ -134,7 +161,12 @@
     updateCounts(pending);
     state.pendingKey = pending.map(function (u) { return u.id; }).join(',');
     $('crmRequestEmpty').hidden = pending.length > 0;
-    $('crmRequestList').innerHTML = pending.map(function (u) {
+    // Keep the office, role and advice already chosen on requests that are still waiting.
+    var chosen = {};
+    $('crmRequestList').querySelectorAll('.item[data-id]').forEach(function (item) {
+      chosen[item.dataset.id] = [].map.call(item.querySelectorAll('[data-f]'), function (el) { return [el.dataset.f, el.value]; });
+    });
+    redraw($('crmRequestList'), pending.map(function (u) {
       var id = 'crmReq' + u.id;
       return '<div class="item" data-id="' + u.id + '">' +
         '<div class="item-head"><div class="crm-person"><span class="crm-avatar" aria-hidden="true">' + esc(initials(u.full_name)) + '</span><div><h4>' + esc(u.full_name) + '</h4>' +
@@ -146,7 +178,13 @@
         field(id + 'Advice', 'Advice they give', '<select id="' + id + 'Advice" data-f="advice_type">' + options(ADVICE, u.advice_type) + '</select>', 'third') +
         '</div><div class="row-actions"><button class="btn primary" type="button" data-act="approve">✓ Approve</button><button class="btn danger" type="button" data-act="reject">Reject</button></div>' +
         '<div class="status" data-status style="margin-top:0"></div></div>';
-    }).join('');
+    }).join(''));
+    $('crmRequestList').querySelectorAll('.item[data-id]').forEach(function (item) {
+      (chosen[item.dataset.id] || []).forEach(function (f) { item.querySelector('[data-f="' + f[0] + '"]').value = f[1]; });
+      var office = item.querySelector('[data-f="office_id"]');
+      office.disabled = OFFICE_ROLES.indexOf(item.querySelector('[data-f="role"]').value) < 0;
+      if (office.disabled) office.value = '';
+    });
   }
   $('crmRequestList').addEventListener('change', function (e) {
     if (e.target.dataset.f !== 'role') return;
@@ -190,7 +228,9 @@
       '<div><h4>' + esc(u.full_name) + '</h4><small>' + esc(u.username) + (u.email ? ' · ' + esc(u.email) : '') + ' · last sign-in ' + esc(when(u.last_login_at)) + '</small></div></div>' +
       '<div class="crm-chips">' + chips.join('') + '</div></div><div class="row-actions">' +
       (u.locked ? '<button class="btn warn" type="button" data-act="unlock">Unlock</button>' : '') +
-      '<button class="btn ghost" type="button" data-act="reset">🔑 Reset password</button><button class="btn ghost" type="button" data-act="edit">✏️ Edit</button></div></div>';
+      // Your own password is changed with the "Password" button at the top (a reset would sign you out).
+      (u.id === state.me ? '' : '<button class="btn ghost" type="button" data-act="reset">🔑 Reset password</button>') +
+      '<button class="btn ghost" type="button" data-act="edit">✏️ Edit</button></div></div>';
   }
   function renderLogins() {
     var q = $('crmLoginSearch').value.trim().toLowerCase(), f = $('crmLoginFilter').value;
@@ -212,7 +252,7 @@
     var html = groups.filter(function (g) { return g[2].length; }).map(function (g) {
       return '<div class="adm-section-divider">' + esc(g[0]) + ' · ' + g[2].length + '</div><p class="adm-hint">' + esc(g[1]) + '</p><div class="list" style="margin-top:0">' + g[2].map(loginItem).join('') + '</div>';
     }).join('');
-    $('crmLoginGroups').innerHTML = html || '<p class="muted" style="margin:18px 0 0">No logins match.</p>';
+    redraw($('crmLoginGroups'), html || '<p class="muted" style="margin:18px 0 0">No logins match.</p>');
   }
   $('crmLoginSearch').addEventListener('input', renderLogins);
   $('crmLoginFilter').addEventListener('change', renderLogins);
@@ -253,7 +293,7 @@
       '</form><div class="status" id="crmLfMsg" style="margin-top:0"></div>' +
       '<div class="actions" style="margin-top:4px"><button class="btn primary" type="button" id="crmLfSave">Save login</button><button class="btn ghost" type="button" data-close>Cancel</button></div>' +
       (isNew ? '<div class="key-hint" style="margin-top:0">New logins need a @' + esc(domain) + ' email. They get a temporary password and choose their own when they first sign in.</div>' : '');
-    openDialog(isNew ? 'Add a login' : (office ? 'Edit the ' + u.full_name + ' office login' : 'Edit ' + u.full_name), html);
+    openDialog(isNew ? 'Add a login' : (office ? 'Edit the ' + (u.office_name || u.full_name) + ' office login' : 'Edit ' + u.full_name), html);
     var form = $('crmLoginForm'), role = form.querySelector('[name="role"]'), officeSel = form.querySelector('[name="office_id"]');
     var sync = function () {
       if (!role) return;
@@ -277,7 +317,8 @@
       api('adminUserSave', data).then(function (r) {
         closeDialog();
         say($('crmLoginStatus'), 'Login saved for ' + data.full_name + '.', 'ok');
-        if (r.temp_password) showSecret('Temporary password for ' + data.full_name, 'Give this to them in person or by phone. They sign in with username "' + data.username + '" and choose their own password.', r.temp_password);
+        if (r.temp_password) showSecret('Temporary password for ' + data.full_name, (data.status === 'disabled' ? 'This login is switched off: they can only sign in after you switch it on. ' : '') +
+          'Give this to them in person or by phone. They sign in with username "' + data.username + '" and choose their own password.', r.temp_password);
         return load();
       }).catch(function (err) { busy(btn, false); formError(form, $('crmLfMsg'), err); });
     });
@@ -285,12 +326,12 @@
 
   /* ---- Offices and settings ---------------------------------------------------------------------- */
   function renderOffices() {
-    $('crmOfficeList').innerHTML = state.offices.map(function (o) {
+    redraw($('crmOfficeList'), state.offices.map(function (o) {
       return '<div class="item" data-id="' + o.id + '"><div class="item-head"><h4>' + esc(o.name) + '</h4>' + (+o.active === 1 ? '<span class="chip live">Open</span>' : '<span class="chip">Closed</span>') + '</div>' +
         '<small>' + esc(o.address || 'No address') + (o.phone ? ' · ' + esc(o.phone) : '') + '</small>' +
         '<div class="crm-mini"><div><b>' + (+o.staff) + '</b><span>Logins</span></div><div><b>' + (+o.clients) + '</b><span>Clients</span></div><div><b>' + (+o.active_cases) + '</b><span>Live cases</span></div></div>' +
         '<div class="row-actions"><button class="btn ghost" type="button" data-act="edit">✏️ Edit</button></div></div>';
-    }).join('');
+    }).join(''));
     var s = state.settings;
     if (s) {
       $('crmTeamThreshold').value = s.team_threshold;
@@ -323,6 +364,13 @@
     var id = +e.target.closest('.item').dataset.id;
     officeForm(state.offices.filter(function (o) { return +o.id === id; })[0]);
   });
+  $('crmTestEmailBtn').addEventListener('click', function () {
+    var btn = this;
+    busy(btn, true, 'Sending…');
+    api('adminTestEmail', {})
+      .then(function (r) { busy(btn, false); say($('crmSettingsStatus'), r.message, 'ok'); })
+      .catch(function (err) { busy(btn, false); say($('crmSettingsStatus'), err.message, 'error'); });
+  });
   $('crmSettingsForm').addEventListener('submit', function (e) {
     e.preventDefault();
     var btn = $('crmSettingsSave'), form = e.target;
@@ -342,6 +390,38 @@
       }).catch(function (err) { say($('crmSecurityStatus'), err.message, 'error'); });
     });
   });
+  // Backups are fetched in the page, so an error (or a sign-in that has run out) shows here instead of replacing the panel.
+  document.querySelectorAll('a[data-download]').forEach(function (a) {
+    a.addEventListener('click', function (e) {
+      if (!window.fetch || !window.Blob || !window.URL || !URL.createObjectURL) return;
+      e.preventDefault();
+      if (a.getAttribute('aria-disabled') === 'true') return;
+      var st = $('crmBackupStatus'), label = a.textContent;
+      a.setAttribute('aria-disabled', 'true');
+      a.textContent = 'Preparing…';
+      hush(st);
+      fetch(a.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-MAP-CRM': '1' } }).then(function (r) {
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            if (j.code === 'signed_out') location.href = SIGNIN + '?next=website-admin';
+            throw new Error(j.message || 'The download could not be made (' + r.status + '). Please try again.');
+          });
+        }
+        var name = ((r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/) || [])[1] || 'map-crm-backup';
+        return r.blob().then(function (blob) {
+          var link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = name;
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(function () { URL.revokeObjectURL(link.href); link.remove(); }, 1000);
+          say(st, 'Downloaded ' + name + '. Keep it somewhere safe.', 'ok');
+        });
+      }, function () { throw new Error('Could not reach the server. Check your connection and try again.'); })
+        .catch(function (err) { say(st, err.message, 'error'); })
+        .then(function () { a.removeAttribute('aria-disabled'); a.textContent = label; });
+    });
+  });
   function checkRecoveryCode() {
     api('status').then(function (r) {
       if (!r.recovery_code) return;
@@ -354,6 +434,7 @@
   function load() {
     return Promise.all([api('adminUsers'), api('adminOffices'), api('adminSettings')]).then(function (res) {
       state.users = res[0].rows;
+      state.me = res[0].me;
       state.offices = res[1].rows;
       state.settings = res[2];
       renderRequests();
@@ -366,6 +447,7 @@
     if (document.visibilityState !== 'visible' || layer.classList.contains('show')) return;
     api('adminUsers').then(function (r) {
       state.users = r.rows;
+      state.me = r.me;
       var key = r.rows.filter(function (u) { return u.status === 'pending'; }).map(function (u) { return u.id; }).join(',');
       if (key !== state.pendingKey) renderRequests();
       renderLogins();
@@ -380,19 +462,35 @@
   // so logins can still be managed.
   window.addEventListener('load', function () {
     if (document.documentElement.dataset.panelReady) return;
-    var show = function (tab) {
+    var links = document.querySelectorAll('.sidebar-link[data-target]');
+    var show = function (tab, targetId) {
       document.querySelectorAll('#dashboardTabs .tab-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === tab); });
       document.querySelectorAll('.section-card[data-tab]').forEach(function (s) { s.classList.toggle('is-hidden', s.dataset.tab !== tab); });
+      // Highlight the sidebar link that was clicked, or the first one in this tab.
+      var mark = [].filter.call(links, function (l) { var t = $(l.dataset.target); return targetId ? l.dataset.target === targetId : !!t && t.dataset.tab === tab; })[0];
+      if (mark) links.forEach(function (l) { l.classList.toggle('active', l === mark); });
     };
     document.querySelectorAll('#dashboardTabs .tab-btn').forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.tab); }); });
-    document.querySelectorAll('.sidebar-link[data-target]').forEach(function (l) {
+    links.forEach(function (l) {
       l.addEventListener('click', function () {
         var target = $(l.dataset.target);
         if (!target) return;
-        show(target.dataset.tab);
+        show(target.dataset.tab, l.dataset.target);
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
+    // The light/dark switch normally comes from the panel's own script.
+    var theme = $('themeToggle');
+    var label = function () { theme.textContent = document.body.classList.contains('dark-mode') ? '☀️ Enable Light Mode' : '🌙 Enable Dark Mode'; };
+    if (theme) {
+      label();
+      theme.addEventListener('click', function () {
+        var dark = !document.body.classList.contains('dark-mode');
+        document.body.classList.toggle('dark-mode', dark);
+        label();
+        try { localStorage.setItem('map_admin_theme', dark ? 'dark' : 'light'); } catch (e) { /* private mode */ }
+      });
+    }
     show('logins');
   });
   load().then(checkRecoveryCode);

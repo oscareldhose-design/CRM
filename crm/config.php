@@ -13,7 +13,8 @@ if (!defined('MAP_CRM')) {
 const CRM_SEED_PASSWORD = 'Map@2025#';      // first password for the newcastle / nottingham / london and admin logins
 const CRM_ALLOWED_DOMAIN = 'themaap.co.uk';  // only emails at this domain may request an account
 const CRM_NOTIFY_EMAIL = 'info@themaap.co.uk'; // told by email when someone requests a login
-const CRM_MAIL_FROM = 'no-reply@themaap.co.uk'; // the "from" address on those emails (must be on your domain)
+const CRM_MAIL_FROM = 'no-reply@themaap.co.uk'; // the "from" address on those emails (must be on your domain; see the README about SPF)
+const CRM_MAIL_SET_SENDER = true;            // also use that address as the bounce address (-f); set to false if your host asks you to
 const CRM_PUBLIC_URL = 'https://themaap.co.uk/crm/'; // where the CRM lives (used for the link in those emails)
 const CRM_WEBSITE_BASE = '/';                // website-admin.php loads the advisor photos (images/...) from here
 define('CRM_DATA_DIR', getenv('MAP_CRM_DATA_DIR') ?: __DIR__ . '/data'); // created automatically (you may move it outside the web root)

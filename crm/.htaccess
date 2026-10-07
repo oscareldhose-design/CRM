@@ -22,6 +22,10 @@ RedirectMatch 404 /(lib|data)(/|$)
     <FilesMatch "\.(html|php)$">
         Header set Cache-Control "no-store"
     </FilesMatch>
+    # Browsers check for a newer copy of the styles and scripts each time, so an update shows straight away.
+    <FilesMatch "\.(js|css)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
 </IfModule>
 
 # Send visitors to https:// (uncomment once your SSL certificate is working).

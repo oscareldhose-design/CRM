@@ -197,9 +197,10 @@ test('convert lead → client + case; offer and completion create tasks and the 
   const prep = tasks.find((t) => t.auto_key === `offer:${caseId}`);
   assert.ok(prep, 'completion-prep task created');
   assert.equal(prep.assigned_to, nottAdminId, 'for the administrator');
-  c = await nottingham.save('cases', { stage: 'completed', completion_date: '2026-06-15' }, caseId, c.version);
+  const completed = daysFromNow(-10);
+  c = await nottingham.save('cases', { stage: 'completed', completion_date: completed }, caseId, c.version);
   assert.equal(c.status, 'completed');
-  assert.equal(c.fixed_rate_end_date, '2028-06-15');
+  assert.equal(c.fixed_rate_end_date, `${+completed.slice(0, 4) + 2}${completed.slice(4)}`, 'a 2-year fix ends 2 years after completion');
   tasks = (await nottingham.get('list', { entity: 'tasks', case_id: caseId, status: 'all' })).json.rows;
   assert.ok(tasks.some((t) => t.auto_key === `postcompletion:${caseId}`), 'post-completion call booked');
   const look = await london.get('lookup', { surname: 'shah' });
@@ -498,6 +499,12 @@ test('the admin login manages logins: add, edit advice type, switch off', async 
   const adminRow = (await admin.get('adminUsers')).json.rows.find((u) => u.username === 'admin');
   const self = await admin.post('adminUserSave', { id: adminRow.id, full_name: adminRow.full_name, email: '', username: 'admin', role: 'webadmin', office_id: 0, advice_type: 'mortgage_protection', status: 'disabled' });
   assert.equal(self.status, 409, 'the admin cannot switch off their own login');
+  const sentBefore = mails().length;
+  const te = await admin.post('adminTestEmail', {});
+  assert.equal(te.status, 200, te.text);
+  assert.equal(mails().length, sentBefore + 1, 'a test email is sent');
+  assert.equal(mails().at(-1).to, 'info@themaap.co.uk');
+  assert.equal((await newcastle.post('adminTestEmail', {})).status, 403, 'only the admin login can send it');
   const settings = (await admin.get('adminSettings')).json;
   assert.ok(!('require_approval' in settings), 'every request needs approval: there is no switch to turn it off');
   const team = (await newcastle.get('team')).json;

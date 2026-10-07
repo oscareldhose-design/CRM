@@ -360,11 +360,11 @@ async function viewTemplates({ el, stale }) {
     <div class="mt"><div class="label">Subject</div><div>${t.subject}</div></div><div class="pre small muted mt" style="max-height:140px;overflow:hidden">${t.body}</div></div>`)}</div>
   ${d.rows.length ? '' : h`<div class="card">${emptyState('mail', 'No templates', '')}</div>`}`);
   on(el, 'click', '[data-new]', () => {
-    const fields = isManager() ? [...FIELDS.templates, { k: 'global', label: 'Share with every office', type: 'check' }] : FIELDS.templates;
+    const fields = isManager() ? [...templateFields(), { k: 'global', label: 'Share with every office', type: 'check' }] : templateFields();
     editRecord({ entity: 'templates', fields, title: 'New email template', onSaved: reload });
   });
-  on(el, 'click', '[data-edit]', (e, b) => { const t = d.rows.find((x) => x.id === +b.dataset.edit); editRecord({ entity: 'templates', record: t, fields: FIELDS.templates, title: `Edit ${t.name}`, onSaved: reload }); });
-  on(el, 'click', '[data-del]', (e, b) => { const t = d.rows.find((x) => x.id === +b.dataset.del); trashRecord('templates', t, `"${t.name}"`, reload); });
+  on(el, 'click', '[data-edit]', (e, b) => { const t = d.rows.find((x) => +x.id === +b.dataset.edit); editRecord({ entity: 'templates', record: t, fields: templateFields(), title: `Edit ${t.name}`, onSaved: reload }); });
+  on(el, 'click', '[data-del]', (e, b) => { const t = d.rows.find((x) => +x.id === +b.dataset.del); trashRecord('templates', t, `"${t.name}"`, reload); });
 }
 
 /* ---------- Lost cases ---------- */
@@ -500,7 +500,7 @@ function importWizard({ title, fields, onImport, extra }) {
         $$('[data-col]', el).forEach((s) => { map[s.dataset.col] = s.value === '' ? undefined : +s.value; });
         const out = rows.slice(1).map((r) => {
           const o = {};
-          for (const fl of fields) if (map[fl.k] !== undefined) o[fl.k] = /dob|date/.test(fl.k) ? excelDate(r[map[fl.k]]) : r[map[fl.k]];
+          for (const fl of fields) if (map[fl.k] !== undefined) o[fl.k] = /dob|date/.test(fl.k) ? excelDate(r[map[fl.k]], fl.k === 'dob') : r[map[fl.k]];
           return o;
         });
         busy(btn, true, 'Importing…');
@@ -559,7 +559,7 @@ async function viewAccount({ el }) {
   const me = S.me;
   setHTML(el, h`${pageHead({ title: 'My account', sub: 'Your login and password.' })}
   <div class="grid grid-2"><section class="card"><div class="card-head"><h2>Your details</h2></div><div class="card-body">${kvHtml([
-    ['Name', me.full_name], ['Username', me.username], ['Email', me.email], ['Role', me.is_office_account ? 'Office login' : me.role_label],
+    ['Name', me.full_name], ['Username', me.username], ['Email', me.email], ['Role', +me.is_office_account ? 'Office login' : me.role_label],
     ['Advice', me.advice_type === 'protection' ? 'Protection only' : 'Mortgage & protection'], ['Office', S.officeName || (me.role === 'sales' ? 'General Sales' : '')],
     ['Last sign-in', fmtDateTime(me.last_login_at)]])}
     <p class="small muted mt">To change your name, email, role, office or advice type, ask the MAP admin.</p></div></section>

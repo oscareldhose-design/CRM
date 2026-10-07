@@ -1,6 +1,9 @@
 /* MAP Operating System: core helpers (safe HTML, API, formatting, forms, tables, dialogs, Excel). */
 'use strict';
 
+/* Loaded in <head> before the page is drawn, so dark mode is applied straight away (no light flash). */
+try { if (localStorage.getItem('map_crm_theme') === 'dark') document.documentElement.dataset.theme = 'dark'; } catch (e) { /* private mode */ }
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -269,8 +272,10 @@ async function copyText(text) {
 }
 function busy(btn, on_, text) {
   if (!btn) return;
-  if (on_) { btn.dataset.label = btn.innerHTML; btn.disabled = true; if (text) btn.textContent = text; }
-  else { btn.disabled = false; if (btn.dataset.label) btn.innerHTML = btn.dataset.label; }
+  if (on_) {
+    if (!btn.dataset.busy) btn.dataset.label = btn.innerHTML; // already busy: keep the original label
+    btn.dataset.busy = '1'; btn.disabled = true; if (text) btn.textContent = text;
+  } else { btn.disabled = false; delete btn.dataset.busy; if (btn.dataset.label) btn.innerHTML = btn.dataset.label; }
 }
 
 /* ---------- Forms ---------- */
@@ -280,19 +285,26 @@ function busy(btn, on_, text) {
  */
 function fieldOptions(f, value) {
   let opts = [];
+  // The record's current choice is always offered, even if that person's login is switched off or the introducer is
+  // inactive, so saving an unrelated change never blanks it.
+  const cur = value === null || value === undefined ? '' : String(value);
   if (f.type === 'user') {
     const roles = f.roles || ['admin', 'manager', 'adviser', 'administrator'];
     const officeId = S.meta.office && S.meta.office.id;
-    opts = S.meta.users.filter((u) => u.status === 'active' && roles.includes(u.role) && (!officeId || u.office_id === officeId || String(u.id) === String(value))
-        && (f.allowOffice || !u.is_office_account || String(u.id) === String(value)))
-      .map((u) => [u.id, u.full_name + (u.role === 'administrator' ? ' (admin)' : '')]);
+    opts = S.meta.users.filter((u) => String(u.id) === cur || (u.status === 'active' && roles.includes(u.role)
+        && (!officeId || +u.office_id === +officeId) && (f.allowOffice || !+u.is_office_account)))
+      .map((u) => [u.id, u.full_name + (u.role === 'administrator' ? ' (admin)' : '') + (u.status === 'active' ? '' : ' (switched off)')]);
+    if (cur && !opts.some(([k]) => String(k) === cur)) opts.push([cur, 'Former member of staff']);
   } else if (f.type === 'introducer') {
     opts = (S.meta.introducers || []).map((i) => [i.id, i.name + (i.company ? ` (${i.company})` : '')]);
+    if (cur && !opts.some(([k]) => String(k) === cur)) opts.push([cur, 'Current introducer (no longer active)']);
   } else if (typeof f.opts === 'string') {
     opts = enumOptions(f.opts);
   } else if (Array.isArray(f.opts)) {
     opts = f.opts;
   }
+  // currentOnly: choices shown only when they are already the record's value (e.g. a converted lead's status).
+  if (f.currentOnly) opts = opts.concat(f.currentOnly.filter(([k]) => String(k) === cur));
   return opts;
 }
 function fieldHtml(f, values) {
@@ -358,8 +370,13 @@ function showFormError(root, err) {
   const alertEl = document.createElement('div');
   alertEl.className = `alert ${err.code === 'conflict' ? 'alert-warn' : 'alert-bad'} form-alert mb`;
   setHTML(alertEl, h`${icon('alert')}<div class="alert-text">${err.message}${err.code === 'conflict' ? h` <button type="button" class="link-btn" data-reload-record>Reload the latest version</button>` : ''}</div>`);
+  alertEl.setAttribute('role', 'alert');
   const body = root.querySelector('.modal-body') || root;
   body.prepend(alertEl);
+  // Long forms are usually scrolled down to the Save button: bring the message into view.
+  alertEl.scrollIntoView({ block: 'nearest' });
+  const reloadBtn = alertEl.querySelector('[data-reload-record]');
+  if (reloadBtn) reloadBtn.focus({ preventScroll: true });
 }
 
 /**
@@ -375,7 +392,10 @@ function editRecord({ entity, record, fields, title, sub, defaults, onSaved, ext
     foot: h`<button class="btn btn-ghost" type="button" data-close>Cancel</button><button class="btn btn-primary" type="button" data-save>${icon('check')}${isNew ? 'Save' : 'Save changes'}</button>`,
     onMount(el, close) {
       const form = $('form', el);
+      let saving = false;
       const save = async () => {
+        if (saving) return;
+        saving = true;
         const btn = $('[data-save]', el);
         busy(btn, true, 'Saving…');
         try {
@@ -387,6 +407,8 @@ function editRecord({ entity, record, fields, title, sub, defaults, onSaved, ext
         } catch (err) {
           busy(btn, false);
           showFormError(el, err);
+        } finally {
+          saving = false;
         }
       };
       on(el, 'click', '[data-save]', save);
@@ -443,7 +465,8 @@ function mountTable(el, opts) {
       ${opts.exportName ? h`<button class="link-btn" type="button" data-export>${icon('download', 'ic-sm')} Download Excel</button>` : ''}</div></div>`);
     state.rows = rows;
   };
-  el.addEventListener('click', (e) => {
+  if (el._tableClick) el.removeEventListener('click', el._tableClick);
+  el._tableClick = (e) => {
     const th = e.target.closest('th[data-sort]');
     if (th) {
       const k = th.dataset.sort;
@@ -463,7 +486,8 @@ function mountTable(el, opts) {
     if (e.target.closest('a, button, input, select, label')) return;
     const tr = e.target.closest('tr[data-href]');
     if (tr) location.hash = tr.dataset.href;
-  });
+  };
+  el.addEventListener('click', el._tableClick);
   draw();
   return { redraw: draw, setRows(rows) { opts.rows = rows; draw(); } };
 }
@@ -575,32 +599,34 @@ async function unzip(buf) {
 async function readXlsx(buf) {
   const z = await unzip(buf);
   const parse = (s) => new DOMParser().parseFromString(s, 'application/xml');
+  // By local name in any namespace: some exporters write prefixed elements such as <x:row>.
+  const tags = (node, name) => node.getElementsByTagNameNS('*', name);
   const wb = parse(await z.text('xl/workbook.xml') || '');
-  const firstSheet = wb.getElementsByTagName('sheet')[0];
+  const firstSheet = tags(wb, 'sheet')[0];
   let target = 'xl/worksheets/sheet1.xml';
   if (firstSheet) {
     const rid = firstSheet.getAttribute('r:id') || firstSheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
     const rels = parse(await z.text('xl/_rels/workbook.xml.rels') || '<x/>');
-    for (const r of rels.getElementsByTagName('Relationship')) {
+    for (const r of tags(rels, 'Relationship')) {
       if (r.getAttribute('Id') === rid) { const t = r.getAttribute('Target'); target = t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, ''); }
     }
   }
   const shared = [];
   const ss = await z.text('xl/sharedStrings.xml');
-  if (ss) for (const si of parse(ss).getElementsByTagName('si')) shared.push([...si.getElementsByTagName('t')].map((t) => t.textContent).join(''));
+  if (ss) for (const si of tags(parse(ss), 'si')) shared.push([...tags(si, 't')].map((t) => t.textContent).join(''));
   const sheetXml = await z.text(target);
   if (!sheetXml) throw new Error('Could not find the first sheet in that workbook.');
   const rows = [];
-  for (const row of parse(sheetXml).getElementsByTagName('row')) {
+  for (const row of tags(parse(sheetXml), 'row')) {
     const out = [];
-    for (const c of row.getElementsByTagName('c')) {
+    for (const c of tags(row, 'c')) {
       const ref = c.getAttribute('r') || '';
       const col = ref.replace(/\d+/g, '').split('').reduce((s, ch) => s * 26 + ch.charCodeAt(0) - 64, 0) - 1;
       const t = c.getAttribute('t');
-      const vEl = c.getElementsByTagName('v')[0];
+      const vEl = tags(c, 'v')[0];
       let v = vEl ? vEl.textContent : '';
       if (t === 's') v = shared[+v] ?? '';
-      else if (t === 'inlineStr') v = [...c.getElementsByTagName('t')].map((x) => x.textContent).join('');
+      else if (t === 'inlineStr') v = [...tags(c, 't')].map((x) => x.textContent).join('');
       else if (t === 'b') v = v === '1' ? 'TRUE' : 'FALSE';
       else if (t !== 'str' && v !== '' && !isNaN(+v)) v = +v;
       out[col >= 0 ? col : out.length] = v;
@@ -627,17 +653,32 @@ function parseCsv(text) {
   if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
   return rows.filter((r) => r.some((c) => String(c).trim() !== ''));
 }
+/** Text of a CSV file: UTF-8 if it is valid UTF-8, otherwise Windows-1252 (Excel's "CSV (Comma delimited)" on UK Windows). */
+async function readCsvText(file) {
+  const buf = await file.arrayBuffer();
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1252').decode(buf); }
+}
 async function readSpreadsheet(file) {
   const name = file.name.toLowerCase();
-  if (name.endsWith('.csv') || name.endsWith('.txt')) return parseCsv(await file.text());
+  if (name.endsWith('.csv') || name.endsWith('.txt')) return parseCsv(await readCsvText(file));
   if (name.endsWith('.xlsx')) return (await readXlsx(await file.arrayBuffer())).filter((r) => r.some((c) => String(c).trim() !== ''));
   throw new Error('Choose an Excel (.xlsx) or CSV file. Older .xls files: open them in Excel and save as .xlsx first.');
 }
-function excelDate(v) {
+/** A spreadsheet date as yyyy-mm-dd. Two-digit years: up to 10 years ahead are 20yy, the rest 19yy; for a date of birth ($past) never in the future. */
+function excelDate(v, past) {
   if (typeof v === 'number' && v > 1000 && v < 90000) { const d = new Date(Math.round((v - 25569) * 86400000)); return d.toISOString().slice(0, 10); }
   const s = String(v || '').trim();
   const m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
-  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`; }
+  if (m) {
+    let y = m[3];
+    if (y.length === 2) {
+      const now = new Date().getFullYear();
+      let full = 2000 + +y;
+      if (full > (past ? now : now + 10)) full -= 100;
+      y = String(full);
+    }
+    return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  }
   return s;
 }
 /** Guesses which spreadsheet column holds which field, from the header names. */

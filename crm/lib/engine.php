@@ -215,8 +215,11 @@ function crm_compliance_eval(array $case, array $docs, $hasPolicy)
     $si = crm_stage_index($stage);
     $received = [];
     foreach ($docs as $d) {
-        if ($d['status'] === 'received') {
-            $received[$d['name']] = true;
+        // A document received and since gone out of date still shows the check was done at the time.
+        if ($d['status'] === 'received' || ($d['status'] === 'expired' && !empty($d['received_at']))) {
+            if (!isset($received[$d['name']]) || $d['status'] === 'received') {
+                $received[$d['name']] = $d['status'];
+            }
         }
     }
     $items = [];
@@ -235,7 +238,7 @@ function crm_compliance_eval(array $case, array $docs, $hasPolicy)
         if (!$manual && !empty($it['docs'])) {
             foreach ($it['docs'] as $dn) {
                 if (isset($received[$dn])) {
-                    $auto = 'Document received: ' . $dn;
+                    $auto = 'Document received: ' . $dn . ($received[$dn] === 'expired' ? ' (now out of date)' : '');
                     break;
                 }
             }
@@ -292,7 +295,7 @@ function crm_case_context($officeId)
             AND deleted_at IS NULL AND COALESCE(requested_at, substr(created_at, 1, 10)) <= ? GROUP BY case_id", [$officeId, crm_add_days($today, -14)]) as $r) {
         $ctx['docs_late'][$r['case_id']] = (int) $r['n'];
     }
-    foreach (crm_all('SELECT case_id, name, status FROM documents WHERE office_id = ? AND case_id IS NOT NULL AND deleted_at IS NULL', [$officeId]) as $r) {
+    foreach (crm_all('SELECT case_id, name, status, received_at FROM documents WHERE office_id = ? AND case_id IS NOT NULL AND deleted_at IS NULL', [$officeId]) as $r) {
         $ctx['docs'][$r['case_id']][] = $r;
     }
     $in = implode(',', array_map(function ($t) {
@@ -368,6 +371,22 @@ function crm_case_risk(array $c, array $ctx)
         $n = $ctx['docs_late'][$c['id']];
         $med[] = $n . ' document' . ($n === 1 ? '' : 's') . ' outstanding over 14 days';
     }
+    if (crm_stage_index($c['stage']) < crm_stage_index('offer')) {
+        // Before the offer the lender may want up-to-date copies of documents that have gone out of date.
+        $fresh = [];
+        $stale = [];
+        foreach ($docs as $d) {
+            if ($d['status'] === 'received') {
+                $fresh[$d['name']] = true;
+            } elseif ($d['status'] === 'expired') {
+                $stale[$d['name']] = true;
+            }
+        }
+        $n = count(array_diff_key($stale, $fresh));
+        if ($n) {
+            $med[] = $n . ' document' . ($n === 1 ? '' : 's') . ' out of date: ask for new copies';
+        }
+    }
     if ($c['stage_changed_at']) {
         $inStage = crm_days_between(crm_local_date($c['stage_changed_at']), $today);
         $limit = in_array($c['stage'], ['conveyancing', 'offer'], true) ? 60 : 30;
@@ -382,7 +401,7 @@ function crm_case_risk(array $c, array $ctx)
 
 /* ---- Automatic rules ------------------------------------------------------------------------- */
 
-/** Creates a task once per $key (the key stops duplicates, even after the task is done or deleted). */
+/** Creates a task once per $key (the key stops duplicates, even after the task is done or moved to the trash). */
 function crm_auto_task($officeId, $key, array $f)
 {
     $now = crm_now();
@@ -406,15 +425,47 @@ function crm_auto_task($officeId, $key, array $f)
     crm_q('INSERT OR IGNORE INTO tasks (' . implode(',', $cols) . ') VALUES (' . implode(',', array_fill(0, count($cols), '?')) . ')', array_values($row));
 }
 
+/**
+ * When the date inside an automatic task's key changes (a corrected fixed-rate end, renewal or quote date), the task
+ * still open for the old date is moved to the new key, so the rule does not add a second one.
+ */
+function crm_auto_task_rekey($officeId, $prefix, $key, array $set)
+{
+    if (crm_val('SELECT id FROM tasks WHERE office_id = ? AND auto_key = ?', [$officeId, $key])) {
+        return;
+    }
+    $old = crm_val("SELECT id FROM tasks WHERE office_id = ? AND status = 'open' AND deleted_at IS NULL AND auto_key LIKE ? ORDER BY id DESC LIMIT 1", [$officeId, $prefix . '%']);
+    if (!$old) {
+        return;
+    }
+    $set['auto_key'] = $key;
+    if (isset($set['title'])) {
+        $set['title'] = mb_substr($set['title'], 0, 200);
+    }
+    $sets = '';
+    foreach (array_keys($set) as $col) {
+        $sets .= $col . ' = ?, ';
+    }
+    crm_q('UPDATE tasks SET ' . $sets . "due_date = MAX(COALESCE(due_date, ''), ?), updated_at = ?, version = version + 1 WHERE id = ?",
+        array_merge(array_values($set), [crm_today(), crm_now(), $old]));
+}
+
+/** Raises an opportunity once per $key. One the engine closed itself whose reason has come back is opened again. */
 function crm_auto_opportunity($officeId, $key, array $f)
 {
     $now = crm_now();
-    crm_q('INSERT OR IGNORE INTO opportunities (office_id, client_id, case_id, type, title, detail, due_date, value, status, auto_key, created_at, updated_at)
+    $detail = isset($f['detail']) ? $f['detail'] : null;
+    $st = crm_q('INSERT OR IGNORE INTO opportunities (office_id, client_id, case_id, type, title, detail, due_date, value, status, auto_key, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, \'open\', ?, ?, ?)', [
         $officeId, isset($f['client_id']) ? $f['client_id'] : null, isset($f['case_id']) ? $f['case_id'] : null, $f['type'],
-        mb_substr($f['title'], 0, 200), isset($f['detail']) ? $f['detail'] : null, isset($f['due_date']) ? $f['due_date'] : null,
+        mb_substr($f['title'], 0, 200), $detail, isset($f['due_date']) ? $f['due_date'] : null,
         isset($f['value']) ? $f['value'] : null, $key, $now, $now,
     ]);
+    if ($st->rowCount() === 0) {
+        // e.g. a protection quote closed the gap, then was not taken up. Ones a person actioned or dismissed stay closed.
+        crm_q("UPDATE opportunities SET status = 'open', detail = ?, actioned_at = NULL, updated_at = ? WHERE office_id = ? AND auto_key = ?
+            AND status = 'actioned' AND actioned_by IS NULL AND detail LIKE ?", [$detail, $now, $officeId, $key, '% (resolved automatically)']);
+    }
 }
 
 /** Closes open opportunities of a type whose reason has gone (e.g. the client now has protection). */
@@ -432,6 +483,24 @@ function crm_close_resolved_opportunities($officeId, $type, array $stillOpenKeys
 function crm_client_name(array $c)
 {
     return trim($c['first_name'] . ' ' . $c['last_name']);
+}
+
+/**
+ * True when the client already has a remortgage, product transfer or further advance that is newer than this
+ * completed case: one still in progress, or one that completed after it. $clientCases are the client's cases.
+ */
+function crm_remortgage_under_way(array $old, array $clientCases)
+{
+    foreach ($clientCases as $c) {
+        if ((int) $c['id'] === (int) $old['id'] || $c['status'] === 'lost'
+            || !in_array($c['case_type'], ['remortgage', 'product_transfer', 'further_advance'], true)) {
+            continue;
+        }
+        if ($c['status'] === 'active' || ($c['completion_date'] && $c['completion_date'] > (string) $old['completion_date'])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /** Runs the automatic rules for an office at most every 10 minutes while people are using it. */
@@ -463,39 +532,56 @@ function crm_engine_run($officeId, $force = false)
         $cases = crm_all('SELECT * FROM cases WHERE office_id = ? AND deleted_at IS NULL', [$officeId]);
         $policies = crm_all("SELECT * FROM policies WHERE office_id = ? AND deleted_at IS NULL", [$officeId]);
         $ctx = crm_case_context($officeId);
+        $casesByClient = [];
+        $casesById = [];
+        foreach ($cases as $c) {
+            $casesByClient[$c['client_id']][] = $c;
+            $casesById[$c['id']] = $c;
+        }
+        // Open automatic opportunities whose reason has gone are closed at the end (see crm_close_resolved_opportunities).
+        $keep = ['remortgage' => [], 'protection_gap' => [], 'landlord_cover' => [], 'home_insurance' => [], 'review_due' => []];
 
-        // 1. Fixed rate ends within 6 months: remortgage opportunity + review task for the adviser.
+        // 1. Fixed rate ends within 6 months: remortgage opportunity + review task for the adviser,
+        //    unless a remortgage / product transfer is already under way for the client.
         $horizon = crm_add_days($today, 183);
         foreach ($cases as $c) {
-            if ($c['status'] !== 'completed' || !$c['fixed_rate_end_date'] || !isset($clients[$c['client_id']])) {
+            if ($c['status'] !== 'completed' || !$c['fixed_rate_end_date'] || !isset($clients[$c['client_id']]) || $c['fixed_rate_end_date'] > $horizon) {
                 continue;
             }
-            if ($c['fixed_rate_end_date'] > $horizon || $c['fixed_rate_end_date'] < crm_add_days($today, -90)) {
+            $prefix = 'remortgage:' . $c['id'] . ':';
+            if (crm_remortgage_under_way($c, $casesByClient[$c['client_id']])) {
+                crm_q("UPDATE tasks SET status = 'done', completed_at = ?, updated_at = ?, version = version + 1 WHERE office_id = ? AND status = 'open'
+                    AND deleted_at IS NULL AND auto_key LIKE ?", [crm_now(), crm_now(), $officeId, $prefix . '%']);
+                continue;
+            }
+            $key = $prefix . $c['fixed_rate_end_date'];
+            $keep['remortgage'][$key] = true;   // one already raised stays open after the rate has ended
+            if ($c['fixed_rate_end_date'] < crm_add_days($today, -90)) {
                 continue;
             }
             $cl = $clients[$c['client_id']];
-            $key = 'remortgage:' . $c['id'] . ':' . $c['fixed_rate_end_date'];
             $who = crm_client_name($cl);
             crm_auto_opportunity($officeId, $key, [
                 'type' => 'remortgage', 'client_id' => $c['client_id'], 'case_id' => $c['id'],
                 'title' => 'Remortgage: ' . $who, 'due_date' => $c['fixed_rate_end_date'], 'value' => $c['loan_amount'],
                 'detail' => 'Fixed rate with ' . ($c['lender'] ?: 'lender') . ' ends ' . $c['fixed_rate_end_date'],
             ]);
+            $title = 'Remortgage review: ' . $who . ' (fixed rate ends ' . date('j M Y', strtotime($c['fixed_rate_end_date'])) . ')';
+            $priority = crm_days_between($today, $c['fixed_rate_end_date']) <= 90 ? 'high' : 'normal';
+            crm_auto_task_rekey($officeId, $prefix, $key, ['title' => $title, 'priority' => $priority]);
             crm_auto_task($officeId, $key, [
-                'title' => 'Remortgage review: ' . $who . ' (fixed rate ends ' . date('j M Y', strtotime($c['fixed_rate_end_date'])) . ')',
+                'title' => $title,
                 'notes' => 'Fixed rate ends within 6 months. Contact the client to review a product transfer or remortgage.',
                 'assigned_to' => $c['adviser_id'] ?: $cl['adviser_id'], 'client_id' => $c['client_id'], 'case_id' => $c['id'],
-                'priority' => crm_days_between($today, $c['fixed_rate_end_date']) <= 90 ? 'high' : 'normal',
+                'priority' => $priority,
             ]);
         }
-        // A newer remortgage / product transfer case for the client actions the opportunity.
-        foreach (crm_all("SELECT o.id, o.created_at, o.client_id, o.case_id FROM opportunities o WHERE o.office_id = ? AND o.type = 'remortgage' AND o.status = 'open'", [$officeId]) as $o) {
-            foreach ($cases as $c) {
-                if ((int) $c['client_id'] === (int) $o['client_id'] && (int) $c['id'] !== (int) $o['case_id']
-                    && in_array($c['case_type'], ['remortgage', 'product_transfer', 'further_advance'], true)
-                    && $c['created_at'] > $o['created_at'] && $c['status'] !== 'lost') {
+        // A remortgage / product transfer under way for the client actions the opportunity.
+        foreach (crm_all("SELECT id, case_id FROM opportunities WHERE office_id = ? AND type = 'remortgage' AND status = 'open'", [$officeId]) as $o) {
+            if ($o['case_id'] && isset($casesById[$o['case_id']])) {
+                $old = $casesById[$o['case_id']];
+                if (crm_remortgage_under_way($old, $casesByClient[$old['client_id']])) {
                     crm_q("UPDATE opportunities SET status = 'actioned', detail = COALESCE(detail, '') || ' (new case opened)', actioned_at = ?, updated_at = ? WHERE id = ?", [crm_now(), crm_now(), $o['id']]);
-                    break;
                 }
             }
         }
@@ -532,8 +618,11 @@ function crm_engine_run($officeId, $force = false)
             $who = crm_client_name($clients[$p['client_id']]);
             $type = crm_label('policy_type', $p['policy_type']);
             if ($p['status'] === 'on_risk' && $p['renewal_date'] && $p['renewal_date'] >= $today && $p['renewal_date'] <= crm_add_days($today, 30)) {
-                crm_auto_task($officeId, 'renewal:' . $p['id'] . ':' . $p['renewal_date'], [
-                    'title' => 'Renewal due ' . date('j M', strtotime($p['renewal_date'])) . ': ' . $type . ' for ' . $who,
+                $key = 'renewal:' . $p['id'] . ':' . $p['renewal_date'];
+                $title = 'Renewal due ' . date('j M', strtotime($p['renewal_date'])) . ': ' . $type . ' for ' . $who;
+                crm_auto_task_rekey($officeId, 'renewal:' . $p['id'] . ':', $key, ['title' => $title]);
+                crm_auto_task($officeId, $key, [
+                    'title' => $title,
                     'notes' => 'Review cover and price before the policy renews.',
                     'assigned_to' => $p['adviser_id'] ?: $clients[$p['client_id']]['adviser_id'],
                     'client_id' => $p['client_id'], 'policy_id' => $p['id'], 'priority' => 'high',
@@ -543,6 +632,7 @@ function crm_engine_run($officeId, $force = false)
                 $quoted = $p['quote_date'] ?: crm_local_date($p['created_at']);
                 $last = max(crm_local_date($p['updated_at']), isset($policyActivity[$p['id']]) ? crm_local_date($policyActivity[$p['id']]) : '0000-00-00', $quoted);
                 if ($quoted <= crm_add_days($today, -14) && $last <= crm_add_days($today, -14)) {
+                    crm_auto_task_rekey($officeId, 'quotequiet:' . $p['id'] . ':', 'quotequiet:' . $p['id'] . ':' . $quoted, []);
                     crm_auto_task($officeId, 'quotequiet:' . $p['id'] . ':' . $quoted, [
                         'title' => 'Chase quote: ' . $type . ' for ' . $who,
                         'notes' => 'This quote has had no activity for over 14 days.',
@@ -560,10 +650,14 @@ function crm_engine_run($officeId, $force = false)
                 $live[$p['client_id']][$p['policy_type']] = true;
             }
         }
-        $keep = ['protection_gap' => [], 'landlord_cover' => [], 'home_insurance' => []];
-        $casesByClient = [];
-        foreach ($cases as $c) {
-            $casesByClient[$c['client_id']][] = $c;
+        $openReview = [];   // client => key of its newest open review opportunity
+        foreach (crm_all("SELECT client_id, auto_key FROM opportunities WHERE office_id = ? AND type = 'review_due' AND status = 'open' AND auto_key IS NOT NULL ORDER BY id", [$officeId]) as $r) {
+            $openReview[$r['client_id']] = $r['auto_key'];
+        }
+        $recentReview = [];   // clients given a review opportunity in the last year (other than ones the engine closed itself)
+        foreach (crm_all("SELECT DISTINCT client_id FROM opportunities WHERE office_id = ? AND type = 'review_due' AND created_at >= ?
+                AND NOT (status = 'actioned' AND actioned_by IS NULL AND COALESCE(detail, '') LIKE ?)", [$officeId, crm_add_days($today, -365), '% (resolved automatically)']) as $r) {
+            $recentReview[$r['client_id']] = true;
         }
         foreach ($clients as $cid => $cl) {
             $cc = isset($casesByClient[$cid]) ? $casesByClient[$cid] : [];
@@ -610,8 +704,11 @@ function crm_engine_run($officeId, $force = false)
                 crm_auto_opportunity($officeId, $key, ['type' => 'home_insurance', 'client_id' => $cid,
                     'title' => 'Home insurance: ' . $who, 'detail' => 'Buying a home with us and no home insurance on file.']);
             }
+            // One open review per client: a corrected review date replaces the one raised for the old date.
             if ($cl['next_review_date'] && $cl['next_review_date'] <= crm_add_days($today, 30)) {
-                crm_auto_opportunity($officeId, 'review:' . $cid . ':' . $cl['next_review_date'], ['type' => 'review_due', 'client_id' => $cid,
+                $key = 'review:' . $cid . ':' . $cl['next_review_date'];
+                $keep['review_due'][$key] = true;
+                crm_auto_opportunity($officeId, $key, ['type' => 'review_due', 'client_id' => $cid,
                     'title' => 'Review due: ' . $who, 'due_date' => $cl['next_review_date'], 'detail' => 'Annual review date ' . $cl['next_review_date'] . '.']);
             } elseif (!$cl['next_review_date'] && $cc) {
                 $lastDone = null;
@@ -622,8 +719,14 @@ function crm_engine_run($officeId, $force = false)
                 }
                 $lastTalk = isset($ctx['client_activity'][$cid]) ? crm_local_date($ctx['client_activity'][$cid]) : null;
                 if ($lastDone && $lastDone <= crm_add_days($today, -365) && (!$lastTalk || $lastTalk <= crm_add_days($today, -365))) {
-                    crm_auto_opportunity($officeId, 'review:' . $cid . ':' . date('Y'), ['type' => 'review_due', 'client_id' => $cid,
-                        'title' => 'Annual review: ' . $who, 'detail' => 'No contact for over a year since completion.']);
+                    if (isset($openReview[$cid])) {
+                        $keep['review_due'][$openReview[$cid]] = true;   // already raised (e.g. last 31 December)
+                    } elseif (empty($recentReview[$cid])) {
+                        $key = 'review:' . $cid . ':' . date('Y');
+                        $keep['review_due'][$key] = true;
+                        crm_auto_opportunity($officeId, $key, ['type' => 'review_due', 'client_id' => $cid,
+                            'title' => 'Annual review: ' . $who, 'detail' => 'No contact for over a year since completion.']);
+                    }
                 }
             }
         }
@@ -639,6 +742,13 @@ function crm_engine_run($officeId, $force = false)
 }
 
 /* ---- Rules that fire when a record changes ------------------------------------------------------ */
+
+/** True when $field still holds the date worked out from the old values ($derived) and this save does not change it by hand. */
+function crm_case_date_derived($field, array $row, array $before, $derived)
+{
+    return $derived !== null && (string) $before[$field] === (string) $derived
+        && (!array_key_exists($field, $row) || (string) $row[$field] === (string) $before[$field]);
+}
 
 /** Fills in dates and status when a case moves stage. $before is null for a new case. */
 function crm_case_prepare(array $row, $before)
@@ -663,8 +773,15 @@ function crm_case_prepare(array $row, $before)
         }
         $rateType = isset($merged['rate_type']) ? $merged['rate_type'] : null;
         $years = isset($merged['fixed_term_years']) ? (int) $merged['fixed_term_years'] : 0;
-        if (empty($merged['fixed_rate_end_date']) && $years > 0 && ($rateType === 'fixed' || !$rateType)) {
-            $row['fixed_rate_end_date'] = crm_add_months($merged['completion_date'], 12 * $years);
+        if ($years > 0 && ($rateType === 'fixed' || !$rateType)) {
+            // Worked out when empty, and again when the completion date or fixed term it came from is corrected.
+            $wasYears = $before ? (int) $before['fixed_term_years'] : 0;
+            $was = $before && !empty($before['completion_date']) && $wasYears > 0 ? crm_add_months($before['completion_date'], 12 * $wasYears) : null;
+            if (empty($merged['fixed_rate_end_date'])
+                || ($was !== null && ((string) $merged['completion_date'] !== (string) $before['completion_date'] || $years !== $wasYears)
+                    && crm_case_date_derived('fixed_rate_end_date', $row, $before, $was))) {
+                $row['fixed_rate_end_date'] = crm_add_months($merged['completion_date'], 12 * $years);
+            }
         }
     }
     if (crm_stage_index($stage) >= crm_stage_index('application') && empty($merged['application_date']) && $stage !== 'completed') {
@@ -677,6 +794,11 @@ function crm_case_prepare(array $row, $before)
         if (empty($merged['offer_expiry_date'])) {
             $row['offer_expiry_date'] = crm_add_months($merged['offer_date'], 6);
         }
+    }
+    // A corrected offer date moves the expiry worked out from it (an expiry typed in by hand stays).
+    if ($before && !empty($merged['offer_date']) && !empty($before['offer_date']) && (string) $merged['offer_date'] !== (string) $before['offer_date']
+        && crm_case_date_derived('offer_expiry_date', $row, $before, crm_add_months($before['offer_date'], 6))) {
+        $row['offer_expiry_date'] = crm_add_months($merged['offer_date'], 6);
     }
     if ($status === 'lost' && (!$before || $before['status'] !== 'lost')) {
         $row['lost_at'] = crm_now();
@@ -716,13 +838,17 @@ function crm_case_after_save($before, array $after)
         ]);
     }
     if ($after['stage'] === 'completed' && $prev !== 'completed') {
-        crm_auto_task($officeId, 'postcompletion:' . $after['id'], [
-            'title' => 'Post-completion call: ' . $who,
-            'notes' => 'Check the client is settled, ask for a review, and discuss protection and home insurance.'
-                . ($after['fixed_rate_end_date'] ? ' Fixed rate ends ' . date('j M Y', strtotime($after['fixed_rate_end_date'])) . '.' : ''),
-            'assigned_to' => $after['adviser_id'], 'client_id' => $after['client_id'], 'case_id' => $after['id'],
-            'due_date' => crm_add_days($after['completion_date'] ?: crm_today(), 14),
-        ]);
+        $completed = $after['completion_date'] ?: crm_today();
+        // A mortgage that completed over a year ago (e.g. old cases added at go-live) gets no call; the annual review covers it.
+        if ($completed >= crm_add_days(crm_today(), -365)) {
+            crm_auto_task($officeId, 'postcompletion:' . $after['id'], [
+                'title' => 'Post-completion call: ' . $who,
+                'notes' => 'Check the client is settled, ask for a review, and discuss protection and home insurance.'
+                    . ($after['fixed_rate_end_date'] ? ' Fixed rate ends ' . date('j M Y', strtotime($after['fixed_rate_end_date'])) . '.' : ''),
+                'assigned_to' => $after['adviser_id'], 'client_id' => $after['client_id'], 'case_id' => $after['id'],
+                'due_date' => max(crm_add_days($completed, 14), crm_today()),
+            ]);
+        }
         crm_insert('activities', [
             'office_id' => $officeId, 'client_id' => $after['client_id'], 'case_id' => $after['id'], 'type' => 'system',
             'summary' => 'Mortgage completed' . ($after['fixed_rate_end_date'] ? '. Fixed rate ends ' . date('j M Y', strtotime($after['fixed_rate_end_date'])) : ''),
@@ -734,6 +860,10 @@ function crm_case_after_save($before, array $after)
 /** After a lead is created: a "contact lead" task for its adviser. */
 function crm_lead_after_create(array $lead)
 {
+    // Not for an import without "Create a contact task", nor for a lead saved as already contacted, qualified or lost.
+    if (!empty($GLOBALS['crm_skip_lead_task']) || $lead['status'] !== 'new') {
+        return;
+    }
     $u = isset($GLOBALS['crm_user']) ? $GLOBALS['crm_user'] : null;
     crm_auto_task((int) $lead['office_id'], 'leadcontact:' . $lead['id'], [
         'title' => 'Contact new lead: ' . trim($lead['first_name'] . ' ' . $lead['last_name']) . ' (' . $lead['rating'] . ')',

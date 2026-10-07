@@ -149,6 +149,9 @@ function crm_dispatch(array $routes)
             crm_fail(403, 'must_change_password', 'Please choose a new password before carrying on.');
         }
         crm_require_access($access, $user);
+        if ($access === 'sales') {
+            crm_forbid_other_office_contact($action, $user);
+        }
         if (crm_protection_only($user)) {
             crm_forbid_mortgage($action);
         }
@@ -271,7 +274,10 @@ function crm_add_months($date, $months)
     if (!$d) {
         return null;
     }
-    $d->modify('+' . (int) $months . ' months');
+    // Stay in the target month: 31 August + 6 months is 28 February, not 3 March.
+    $day = (int) $d->format('j');
+    $d->setDate((int) $d->format('Y'), (int) $d->format('n') + (int) $months, 1);
+    $d->setDate((int) $d->format('Y'), (int) $d->format('n'), min($day, (int) $d->format('t')));
     return $d->format('Y-m-d');
 }
 
@@ -329,8 +335,10 @@ function crm_norm_email($s)
 function crm_norm_phone($s)
 {
     $d = preg_replace('/\D+/', '', (string) $s);
-    if (strpos($d, '44') === 0 && strlen($d) >= 12) {
-        $d = '0' . substr($d, 2);
+    // 0044… and +44 (0)… are the same UK number as 0…
+    $d = preg_replace('/^00/', '', $d);
+    if (preg_match('/^440?(\d{9,10})$/', $d, $m)) {
+        $d = '0' . $m[1];
     }
     return $d;
 }
@@ -348,6 +356,9 @@ function crm_password_problem($pw)
     }
     if (strlen($pw) > 200) {
         return 'Use 200 characters or fewer.';
+    }
+    if (strpos($pw, "\0") !== false) {
+        return 'Passwords can\'t contain hidden control characters.';
     }
     if (!preg_match('/[a-z]/', $pw) || !preg_match('/[A-Z]/', $pw) || !preg_match('/\d/', $pw)) {
         return 'Use a mix of upper-case letters, lower-case letters and numbers.';
@@ -394,6 +405,12 @@ function crm_mail($to, $subject, $body, $replyTo = null)
     };
     $to = $clean($to);
     $from = $clean(CRM_MAIL_FROM);
+    if (!crm_valid_email($from)) {
+        error_log('MAP CRM: CRM_MAIL_FROM in config.php is not a valid email address; using no-reply@' . CRM_ALLOWED_DOMAIN);
+        $from = 'no-reply@' . CRM_ALLOWED_DOMAIN;
+    }
+    // Give the mail server the From address as the envelope sender (-f) too, unless config.php says not to.
+    $envelope = !defined('CRM_MAIL_SET_SENDER') || CRM_MAIL_SET_SENDER;
     $headers = [
         'From: MAP CRM <' . $from . '>',
         'MIME-Version: 1.0',
@@ -414,12 +431,12 @@ function crm_mail($to, $subject, $body, $replyTo = null)
         error_log('MAP CRM: mail() is not available on this server; could not email ' . $to);
         return false;
     }
-    $ok = @mail($to, $subj, $body, implode("\r\n", $headers), '-f' . $from);
+    $ok = $envelope ? @mail($to, $subj, $body, implode("\r\n", $headers), '-f' . $from) : false;
     if (!$ok) {
         $ok = @mail($to, $subj, $body, implode("\r\n", $headers));
     }
     if (!$ok) {
-        error_log('MAP CRM: the server would not send an email to ' . $to);
+        error_log('MAP CRM: the server would not send an email to ' . $to . ' (ask your web host to enable PHP mail())');
     }
     return $ok;
 }
@@ -459,12 +476,29 @@ function crm_db()
     }
     // The database file gets a random name so it can't be guessed even on servers that ignore .htaccess.
     $cfgFile = $dir . '/config.php';
+    $cfgOk = function ($cfg) {
+        return is_array($cfg) && !empty($cfg['db']) && preg_match('/^crm-[a-f0-9]{32}\.sqlite$/', $cfg['db']);
+    };
     $cfg = is_file($cfgFile) ? (include $cfgFile) : null;
-    if (!is_array($cfg) || empty($cfg['db']) || !preg_match('/^crm-[a-f0-9]{32}\.sqlite$/', $cfg['db'])) {
-        $cfg = ['db' => 'crm-' . bin2hex(random_bytes(16)) . '.sqlite', 'created' => crm_now()];
-        $php = "<?php\n// MAP CRM: name of the database file in this folder. Do not share.\nreturn " . var_export($cfg, true) . ";\n";
-        if (@file_put_contents($cfgFile, $php, LOCK_EX) === false) {
-            crm_fail(503, 'storage', 'The CRM could not write to its "data" folder. Please make sure PHP can write to the crm folder.');
+    if (!$cfgOk($cfg)) {
+        // First run: one request at a time picks the name (then checks again), so two can't make two databases.
+        $lock = @fopen($dir . '/.lock', 'c');
+        if ($lock) {
+            flock($lock, LOCK_EX);
+        }
+        $cfg = is_file($cfgFile) ? (include $cfgFile) : null;
+        if (!$cfgOk($cfg)) {
+            $cfg = ['db' => 'crm-' . bin2hex(random_bytes(16)) . '.sqlite', 'created' => crm_now()];
+            $php = "<?php\n// MAP CRM: name of the database file in this folder. Do not share.\nreturn " . var_export($cfg, true) . ";\n";
+            $tmp = $cfgFile . '.' . bin2hex(random_bytes(4)) . '.tmp';
+            if (@file_put_contents($tmp, $php) === false || !@rename($tmp, $cfgFile)) {
+                @unlink($tmp);
+                crm_fail(503, 'storage', 'The CRM could not write to its "data" folder. Please make sure PHP can write to the crm folder.');
+            }
+        }
+        if ($lock) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
     }
     $file = $dir . '/' . $cfg['db'];
@@ -472,6 +506,8 @@ function crm_db()
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_TIMEOUT => 10,
+        // Testing only: MAP_CRM_STRINGIFY_FETCHES=1 makes PHP 8.1+ return numbers as strings, like PHP 7.4 and 8.0 do.
+        PDO::ATTR_STRINGIFY_FETCHES => (bool) getenv('MAP_CRM_STRINGIFY_FETCHES'),
     ]);
     @chmod($file, 0600);
     $pdo->exec('PRAGMA journal_mode = WAL');
@@ -485,11 +521,33 @@ function crm_db()
         $ver = 0;
     }
     if ($ver < CRM_SCHEMA_VERSION) {
-        crm_schema($pdo);
-        crm_migrate($pdo);
-        crm_seed($pdo);
-        $pdo->prepare("INSERT INTO settings (key, value) VALUES ('schema_version', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-            ->execute([CRM_SCHEMA_VERSION]);
+        $sqlite = (string) $pdo->query('SELECT sqlite_version()')->fetchColumn();
+        if (version_compare($sqlite, '3.8.0', '<')) {
+            crm_fail(503, 'old_sqlite', 'This server\'s SQLite (' . $sqlite . ') is too old for the CRM, which needs SQLite 3.8 or newer. Ask your web host to update PHP.');
+        }
+        // One request at a time sets up or upgrades the database; any others wait, then find it already done.
+        $pdo->exec('BEGIN IMMEDIATE');
+        try {
+            try {
+                $ver = (int) $pdo->query("SELECT value FROM settings WHERE key = 'schema_version'")->fetchColumn();
+            } catch (Exception $e) {
+                $ver = 0;
+            }
+            if ($ver < CRM_SCHEMA_VERSION) {
+                crm_schema($pdo);
+                crm_migrate($pdo, $ver);
+                crm_seed($pdo);
+                $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)")->execute([CRM_SCHEMA_VERSION]);
+            }
+            $pdo->exec('COMMIT');
+        } catch (Exception $e) {
+            try {
+                $pdo->exec('ROLLBACK');
+            } catch (Exception $ignored) {
+            }
+            $pdo = null;
+            throw $e;
+        }
     }
     return $pdo;
 }
@@ -501,20 +559,87 @@ function crm_q($sql, array $params = [])
     return $st;
 }
 
+/** True when PDO hands back SQLite numbers as strings (PHP 7.4 and 8.0). The helpers below then convert them. */
+function crm_db_stringifies()
+{
+    static $s = null;
+    if ($s === null) {
+        $s = !is_int(crm_db()->query('SELECT 1')->fetchColumn());
+    }
+    return $s;
+}
+
+/**
+ * The next row of $st with SQLite INTEGER and REAL values as PHP ints and floats on every PHP version (PHP 8.1+ does
+ * this by itself; PHP 7.4 and 8.0 return strings, which breaks === checks here and in the app). Keyed by column name,
+ * or by column number when $assoc is false; $names caches the column names between rows. False when no rows are left.
+ */
+function crm_fetch_typed(PDOStatement $st, array &$names, $assoc = true)
+{
+    $row = $st->fetch(PDO::FETCH_NUM);
+    if ($row === false) {
+        return false;
+    }
+    $out = [];
+    foreach ($row as $i => $v) {
+        if (is_string($v) && is_numeric($v)) {
+            // The storage type of this value in this row (any SQLite column can hold any type).
+            $meta = $st->getColumnMeta($i);
+            $type = $meta && isset($meta['native_type']) ? $meta['native_type'] : '';
+            if ($type === 'integer') {
+                $v = (int) $v;
+            } elseif ($type === 'double') {
+                $v = (float) $v;
+            }
+        }
+        if (!$assoc) {
+            $out[$i] = $v;
+            continue;
+        }
+        if (!isset($names[$i])) {
+            $meta = $st->getColumnMeta($i);
+            $names[$i] = $meta['name'];
+        }
+        $out[$names[$i]] = $v;
+    }
+    return $out;
+}
+
 function crm_all($sql, array $params = [])
 {
-    return crm_q($sql, $params)->fetchAll();
+    $st = crm_q($sql, $params);
+    if (!crm_db_stringifies()) {
+        return $st->fetchAll();
+    }
+    $rows = [];
+    $names = [];
+    while (($r = crm_fetch_typed($st, $names)) !== false) {
+        $rows[] = $r;
+    }
+    return $rows;
 }
 
 function crm_one($sql, array $params = [])
 {
-    $r = crm_q($sql, $params)->fetch();
+    $st = crm_q($sql, $params);
+    if (crm_db_stringifies()) {
+        $names = [];
+        $r = crm_fetch_typed($st, $names);
+    } else {
+        $r = $st->fetch();
+    }
     return $r === false ? null : $r;
 }
 
 function crm_val($sql, array $params = [])
 {
-    $v = crm_q($sql, $params)->fetchColumn();
+    $st = crm_q($sql, $params);
+    if (crm_db_stringifies()) {
+        $names = [];
+        $r = crm_fetch_typed($st, $names, false);
+        return $r === false ? null : $r[0];
+    }
+    $v = $st->fetchColumn();
     return $v === false ? null : $v;
 }
 
@@ -569,7 +694,7 @@ function crm_setting($key, $default = null)
 
 function crm_set_setting($key, $value)
 {
-    crm_q('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [$key, $value === null ? null : (string) $value]);
+    crm_q('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', [$key, $value === null ? null : (string) $value]);
 }
 
 /** Writes an audit log line. $changes is an array of field => [old, new]. */
@@ -957,15 +1082,24 @@ CREATE INDEX IF NOT EXISTS idx_sales_calls_contact ON sales_calls(contact_id);
 ");
 }
 
-/** Brings a database made by an earlier version up to date. */
-function crm_migrate(PDO $pdo)
+/** Brings a database made by an earlier version ($from: its schema version, 0 for a new database) up to date. */
+function crm_migrate(PDO $pdo, $from = 0)
 {
     $cols = array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
     if (!in_array('advice_type', $cols, true)) {
         $pdo->exec("ALTER TABLE users ADD COLUMN advice_type TEXT NOT NULL DEFAULT 'mortgage_protection'");
     }
-    // Version 2: the office logins are equal office accounts; the admin login manages every login.
-    $pdo->exec("UPDATE users SET role = 'manager' WHERE role = 'admin' AND is_office_account = 1");
+    // Version 2: the office logins are equal office accounts and the admin login manages every login, so there are no
+    // system admins any more (they could open every office): office logins and staff alike become office managers.
+    $pdo->exec("UPDATE users SET role = 'manager' WHERE role = 'admin'");
+    if ($from === 1) {
+        // Version 1 showed the recovery code to the Newcastle login; now it resets the admin login. Make a new one,
+        // shown to the admin login at its next sign-in, so the old code stops working.
+        $code = crm_recovery_code();
+        $set = $pdo->prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+        $set->execute(['recovery_hash', password_hash($code, PASSWORD_DEFAULT)]);
+        $set->execute(['recovery_pending', $code]);
+    }
 }
 
 /** First run: the three offices, their logins, the website admin login, the recovery code and starter email templates. */
@@ -991,7 +1125,7 @@ function crm_seed(PDO $pdo)
     // The website admin panel login (website-admin.php).
     $insUser->execute(['admin', 'Website admin', password_hash(CRM_SEED_PASSWORD, PASSWORD_DEFAULT), 'webadmin', null, $now, $now, $now]);
     $code = crm_recovery_code();
-    $set = $pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    $set = $pdo->prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
     $set->execute(['recovery_hash', password_hash($code, PASSWORD_DEFAULT)]);
     $set->execute(['recovery_pending', $code]);   // shown once to the admin login at first sign-in, then deleted
     $set->execute(['team_threshold', '30']);

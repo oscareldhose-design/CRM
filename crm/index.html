@@ -12,7 +12,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Montserrat:wght@600;700;800&display=swap">
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="app.css?v=20261007">
+<!-- core.js runs before the page is drawn so a saved dark theme applies at once. The ?v= numbers make browsers fetch the new files after an update: change them whenever you upload new versions of these files. -->
+<script src="js/core.js?v=20261007"></script>
 </head>
 <body>
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
@@ -76,17 +78,16 @@
   <symbol id="i-pound" viewBox="0 0 24 24"><path d="M18 7a4.5 4.5 0 0 0-8.5 2v11M6 20h12M6 13h8"/></symbol>
   <symbol id="i-gdpr" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/></symbol>
 </svg>
-<div id="app" class="app" aria-live="polite">
+<div id="app" class="app">
   <div class="loading"><div class="spinner" role="status" aria-label="Loading"></div></div>
 </div>
 <div id="modals"></div>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 <noscript><p style="padding:24px;font-family:sans-serif">The MAP Operating System needs JavaScript switched on.</p></noscript>
-<script src="js/core.js" defer></script>
-<script src="js/auth.js" defer></script>
-<script src="js/shell.js" defer></script>
-<script src="js/views-main.js" defer></script>
-<script src="js/views-more.js" defer></script>
-<script src="js/sales.js" defer></script>
+<script src="js/auth.js?v=20261007" defer></script>
+<script src="js/shell.js?v=20261007" defer></script>
+<script src="js/views-main.js?v=20261007" defer></script>
+<script src="js/views-more.js?v=20261007" defer></script>
+<script src="js/sales.js?v=20261007" defer></script>
 </body>
 </html>

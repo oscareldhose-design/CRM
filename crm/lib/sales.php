@@ -73,9 +73,11 @@ function crm_sales_find_event($id)
     return $e;
 }
 
-function crm_sales_find_contact($id)
+/** $withRemoved: also finds people removed from a list or on a deleted event (they can still be erased). */
+function crm_sales_find_contact($id, $withRemoved = false)
 {
-    $c = crm_one('SELECT ec.* FROM event_contacts ec JOIN events e ON e.id = ec.event_id AND e.deleted_at IS NULL WHERE ec.id = ? AND ec.deleted_at IS NULL', [$id]);
+    $c = $withRemoved ? crm_one('SELECT * FROM event_contacts WHERE id = ?', [$id])
+        : crm_one('SELECT ec.* FROM event_contacts ec JOIN events e ON e.id = ec.event_id AND e.deleted_at IS NULL WHERE ec.id = ? AND ec.deleted_at IS NULL', [$id]);
     if (!$c) {
         crm_fail(404, 'not_found', 'That contact could not be found.');
     }
@@ -90,6 +92,21 @@ function crm_action_sales_event()
     $contacts = crm_all("SELECT ec.*, (SELECT name FROM offices WHERE id = ec.handed_office_id) AS handed_office,
         (SELECT notes FROM sales_calls sc WHERE sc.contact_id = ec.id ORDER BY sc.id DESC LIMIT 1) AS last_note
         FROM event_contacts ec WHERE ec.event_id = ? AND ec.deleted_at IS NULL ORDER BY ec.last_name COLLATE NOCASE, ec.first_name COLLATE NOCASE", [$id]);
+    $u = crm_user();
+    if ($u['role'] !== 'sales') {
+        // An office login sees the people handed to its own office, but not the details of people handed to another office.
+        $mine = (int) $u['office_id'];
+        foreach ($contacts as $i => $c) {
+            if ($c['handed_office_id'] && (int) $c['handed_office_id'] !== $mine) {
+                foreach (['first_name', 'last_name', 'email', 'phone', 'postcode', 'interest', 'notes', 'last_note'] as $k) {
+                    if (array_key_exists($k, $c)) {
+                        $contacts[$i][$k] = null;
+                    }
+                }
+                $contacts[$i]['first_name'] = 'Handed to ' . ($c['handed_office'] ?: 'another office');
+            }
+        }
+    }
     crm_ok(['event' => crm_sales_event_row($e, crm_sales_stats($id)), 'contacts' => $contacts]);
 }
 
@@ -146,6 +163,12 @@ function crm_action_sales_event_delete()
     crm_ok();
 }
 
+/**
+ * Event contacts that count as already known, so the same person is never added (and called) twice: everyone on a
+ * current list, plus anyone removed from a list or on a deleted event who asked not to be called or had a wrong number.
+ */
+const CRM_SALES_KNOWN_WHERE = "ec.erased_at IS NULL AND ((ec.deleted_at IS NULL AND e.deleted_at IS NULL) OR ec.status IN ('do_not_call','wrong_number'))";
+
 /** Finds an existing event contact with the same email or phone (any event). */
 function crm_sales_duplicate($email, $phone, $exceptId = 0)
 {
@@ -154,8 +177,8 @@ function crm_sales_duplicate($email, $phone, $exceptId = 0)
     if ($e === '' && $p === '') {
         return null;
     }
-    foreach (crm_all('SELECT ec.id, ec.email, ec.phone, ec.first_name, ec.last_name, e.name AS event_name FROM event_contacts ec JOIN events e ON e.id = ec.event_id
-            WHERE ec.deleted_at IS NULL AND ec.erased_at IS NULL AND e.deleted_at IS NULL AND ec.id <> ?', [$exceptId]) as $r) {
+    foreach (crm_all('SELECT ec.id, ec.email, ec.phone, ec.first_name, ec.last_name, ec.status, ec.deleted_at, e.deleted_at AS event_deleted_at, e.name AS event_name
+            FROM event_contacts ec JOIN events e ON e.id = ec.event_id WHERE ' . CRM_SALES_KNOWN_WHERE . ' AND ec.id <> ?', [$exceptId]) as $r) {
         if (($e !== '' && crm_norm_email($r['email']) === $e) || ($p !== '' && crm_norm_phone($r['phone']) === $p)) {
             return $r;
         }
@@ -191,25 +214,40 @@ function crm_action_sales_contact_save()
     if (!$consent) {
         crm_fail(400, 'invalid', 'Only add people who agreed to be contacted by MAP.', 'consent');
     }
-    $dup = crm_sales_duplicate($email, $phone, $id);
-    if ($dup) {
-        crm_fail(409, 'duplicate', 'This person is already on the list for ' . $dup['event_name'] . ' (' . trim($dup['first_name'] . ' ' . $dup['last_name']) . ').', 'phone');
-    }
     $row = [
         'first_name' => $first, 'last_name' => $last, 'email' => $email ? crm_norm_email($email) : null, 'phone' => $phone ?: null,
         'postcode' => strtoupper(crm_in_str('postcode', 12)) ?: null, 'interest' => crm_in_str('interest', 200) ?: null,
         'notes' => crm_clean((string) crm_in('notes', ''), 2000, true) ?: null,
     ];
-    $now = crm_now();
-    if ($existing) {
-        crm_update_row('event_contacts', $id, $row + ['updated_at' => $now, 'updated_by' => $u['id'], 'version' => (int) $existing['version'] + 1]);
-        crm_audit('update', 'event_contacts', $id, 'Updated event contact ' . trim($first . ' ' . $last), null, null);
-    } else {
+    $version = crm_in('version');
+    // In one write transaction, so two people adding the same person at once can't both get past the duplicate check.
+    $id = crm_tx(function () use ($u, $id, $event, $eventId, $email, $phone, $first, $last, $row, $version) {
+        $existing = $id ? crm_sales_find_contact($id) : null;
+        if ($existing && $existing['erased_at']) {
+            crm_fail(409, 'closed', 'This person\'s personal data has been erased, so they can\'t be changed.');
+        }
+        if ($existing && $version !== null && $version !== '' && (int) $version !== (int) $existing['version']) {
+            crm_fail(409, 'conflict', (crm_user_name($existing['updated_by']) ?: 'Someone else') . ' changed this contact while you were editing. Reload it and try again.');
+        }
+        $dup = crm_sales_duplicate($email, $phone, $id);
+        if ($dup) {
+            $who = $dup['event_name'] . ' (' . trim($dup['first_name'] . ' ' . $dup['last_name']) . ')';
+            crm_fail(409, 'duplicate', $dup['deleted_at'] || $dup['event_deleted_at']
+                ? 'This person was on the list for ' . $who . ' and was marked "' . crm_label('contact_status', $dup['status']) . '", so they can\'t be added again.'
+                : 'This person is already on the list for ' . $who . '.', 'phone');
+        }
+        $now = crm_now();
+        if ($existing) {
+            crm_update_row('event_contacts', $id, $row + ['updated_at' => $now, 'updated_by' => $u['id'], 'version' => (int) $existing['version'] + 1]);
+            crm_audit('update', 'event_contacts', $id, 'Updated event contact ' . trim($first . ' ' . $last), null, null);
+            return $id;
+        }
         $id = crm_insert('event_contacts', $row + ['event_id' => $eventId, 'consent' => 1, 'consent_at' => $now,
             'consent_source' => 'Added by ' . $u['full_name'] . ' (' . $event['name'] . ')', 'status' => 'new',
             'created_at' => $now, 'created_by' => $u['id'], 'updated_at' => $now, 'updated_by' => $u['id']]);
         crm_audit('create', 'event_contacts', $id, 'Added event contact ' . trim($first . ' ' . $last) . ' to ' . $event['name'], null, null);
-    }
+        return $id;
+    });
     crm_ok(['id' => $id]);
 }
 
@@ -227,9 +265,30 @@ function crm_erase_event_contact($id)
 {
     $now = crm_now();
     crm_q("UPDATE event_contacts SET first_name = 'Erased', last_name = 'contact #' || id, email = NULL, phone = NULL, postcode = NULL, interest = NULL, notes = NULL,
-        status = CASE WHEN status = 'handed_over' THEN status ELSE 'do_not_call' END, erased_at = ?, claimed_by = NULL, updated_at = ? WHERE id = ?", [$now, $now, $id]);
+        status = CASE WHEN status = 'handed_over' THEN status ELSE 'do_not_call' END, erased_at = ?, claimed_by = NULL, updated_at = ?, version = version + 1 WHERE id = ?", [$now, $now, $id]);
     crm_q('UPDATE sales_calls SET notes = NULL WHERE contact_id = ?', [$id]);
     crm_q("UPDATE audit_log SET summary = '[erased]', changes = NULL WHERE entity = 'event_contacts' AND entity_id = ?", [$id]);
+}
+
+/** GDPR: removes a handed-over person's details from the office lead made from them, and from its calls, notes and tasks. */
+function crm_erase_handed_lead($leadId, $officeId)
+{
+    $now = crm_now();
+    $taskIds = array_map('intval', array_column(crm_all('SELECT id FROM tasks WHERE lead_id = ?', [$leadId]), 'id'));
+    $actIds = array_map('intval', array_column(crm_all('SELECT id FROM activities WHERE lead_id = ?', [$leadId]), 'id'));
+    crm_q("UPDATE leads SET first_name = 'Erased', last_name = 'lead #' || id, email = NULL, phone = NULL, notes = NULL, lost_reason = NULL, employment = NULL,
+        credit_issues = NULL, updated_at = ?, version = version + 1 WHERE id = ?", [$now, $leadId]);
+    crm_q("UPDATE activities SET summary = '[erased]', outcome = NULL WHERE lead_id = ?", [$leadId]);
+    crm_q("UPDATE tasks SET title = 'Task (lead erased)', notes = NULL, updated_at = ?, version = version + 1 WHERE lead_id = ?", [$now, $leadId]);
+    // Nothing can be followed up for a person who is no longer on file.
+    crm_q("UPDATE tasks SET status = 'done', completed_at = ?, completed_by = ? WHERE lead_id = ? AND status = 'open'", [$now, crm_user()['id'], $leadId]);
+    crm_q("UPDATE audit_log SET summary = '[erased]', changes = NULL WHERE entity = 'leads' AND entity_id = ?", [$leadId]);
+    foreach (['tasks' => $taskIds, 'activities' => $actIds] as $entity => $ids) {
+        if ($ids) {
+            crm_q("UPDATE audit_log SET summary = '[erased]', changes = NULL WHERE entity = ? AND entity_id IN (" . implode(',', $ids) . ')', [$entity]);
+        }
+    }
+    crm_audit('gdpr_erase', 'leads', $leadId, 'Personal data erased on request by General Sales (lead #' . $leadId . ')', null, $officeId);
 }
 
 function crm_action_sales_contact_erase()
@@ -238,8 +297,19 @@ function crm_action_sales_contact_erase()
         crm_fail(400, 'invalid', 'Type ERASE to confirm.', 'confirm');
     }
     $id = crm_in_int('id');
-    crm_sales_find_contact($id);
+    crm_sales_find_contact($id, true);
     crm_tx(function () use ($id) {
+        // A person handed over to an office is also a lead there, with the same name, phone, email and call notes.
+        $leads = crm_all('SELECT id, office_id, client_id FROM leads WHERE event_contact_id = ? OR id = (SELECT handed_lead_id FROM event_contacts WHERE id = ?)', [$id, $id]);
+        foreach ($leads as $l) {
+            if ($l['client_id'] && crm_val('SELECT id FROM clients WHERE id = ? AND erased_at IS NULL', [$l['client_id']])) {
+                $office = crm_val('SELECT name FROM offices WHERE id = ?', [$l['office_id']]);
+                crm_fail(409, 'client', 'This person is now a client of the ' . $office . ' office. Ask a manager there to erase the client\'s personal data: that removes them from General Sales too.');
+            }
+        }
+        foreach ($leads as $l) {
+            crm_erase_handed_lead((int) $l['id'], (int) $l['office_id']);
+        }
         crm_erase_event_contact($id);
         crm_audit('gdpr_erase', 'event_contacts', $id, 'Personal data erased on request (event contact #' . $id . ')', null, null);
     });
@@ -279,19 +349,20 @@ function crm_action_sales_import()
     if (count($rows) > 10000) {
         crm_fail(400, 'invalid', 'Import up to 10,000 rows at a time.');
     }
-    $emails = [];
-    $phones = [];
-    foreach (crm_all('SELECT ec.email, ec.phone FROM event_contacts ec JOIN events e ON e.id = ec.event_id WHERE ec.deleted_at IS NULL AND ec.erased_at IS NULL AND e.deleted_at IS NULL') as $r) {
-        if ($r['email']) {
-            $emails[crm_norm_email($r['email'])] = true;
-        }
-        if ($r['phone']) {
-            $phones[crm_norm_phone($r['phone'])] = true;
-        }
-    }
     $res = ['added' => 0, 'duplicates' => 0, 'no_consent' => 0, 'invalid' => 0, 'errors' => []];
     $now = crm_now();
-    crm_tx(function () use ($rows, $assume, $event, $u, $now, &$emails, &$phones, &$res) {
+    crm_tx(function () use ($rows, $assume, $event, $u, $now, &$res) {
+        // Read inside the write transaction, so two imports of the same list at once can't both add everyone.
+        $emails = [];
+        $phones = [];
+        foreach (crm_all('SELECT ec.email, ec.phone FROM event_contacts ec JOIN events e ON e.id = ec.event_id WHERE ' . CRM_SALES_KNOWN_WHERE) as $r) {
+            if ($r['email']) {
+                $emails[crm_norm_email($r['email'])] = true;
+            }
+            if ($r['phone']) {
+                $phones[crm_norm_phone($r['phone'])] = true;
+            }
+        }
         foreach ($rows as $n => $r) {
             if (!is_array($r)) {
                 continue;
@@ -321,6 +392,7 @@ function crm_action_sales_import()
                 $res['errors'][] = ['row' => $n + 2, 'message' => 'Needs a name and a phone number or email'];
                 continue;
             }
+            $rawEmail = $email;
             if ($email !== '' && !crm_valid_email($email)) {
                 $email = '';
             }
@@ -331,6 +403,11 @@ function crm_action_sales_import()
                     continue;
                 }
                 $phone = '';
+            }
+            if ($email === '' && $phone === '') {
+                $res['invalid']++;
+                $res['errors'][] = ['row' => $n + 2, 'message' => 'Email address not valid: ' . $rawEmail];
+                continue;
             }
             $ne = $email;
             $np = $phone !== '' ? crm_norm_phone($phone) : '';
@@ -438,10 +515,7 @@ function crm_action_sales_call()
     if (!isset(crm_enums()['call_outcome'][$outcome])) {
         crm_fail(400, 'invalid', 'Choose how the call went.', 'outcome');
     }
-    $c = crm_sales_find_contact($id);
-    if ($c['erased_at'] || $c['status'] === 'handed_over') {
-        crm_fail(409, 'closed', 'This contact has already been dealt with.');
-    }
+    crm_sales_find_contact($id);
     $callback = null;
     if ($outcome === 'callback') {
         $cb = crm_in_str('callback_at', 25);
@@ -453,7 +527,18 @@ function crm_action_sales_call()
     }
     $map = ['no_answer' => 'no_answer', 'voicemail' => 'no_answer', 'callback' => 'callback', 'interested' => 'interested',
         'not_interested' => 'not_interested', 'wrong_number' => 'wrong_number', 'do_not_call' => 'do_not_call'];
-    crm_tx(function () use ($u, $id, $outcome, $notes, $callback, $map, $c) {
+    crm_tx(function () use ($u, $id, $outcome, $notes, $callback, $map) {
+        // Re-read in the write transaction: only someone the queue could still offer can have a call logged, so a screen
+        // left open past its 15 minutes can't overwrite another agent's "Do not call" (or "Interested") and requeue them.
+        $c = crm_sales_find_contact($id);
+        if ($c['erased_at'] || $c['status'] === 'handed_over') {
+            crm_fail(409, 'closed', 'This contact has already been dealt with.');
+        }
+        if (!in_array($c['status'], ['new', 'callback', 'no_answer'], true)) {
+            $by = crm_val('SELECT user_name FROM sales_calls WHERE contact_id = ? ORDER BY id DESC LIMIT 1', [$id]);
+            crm_fail(409, 'conflict', ($by ?: 'Someone else') . ' has already logged a call to this person: ' . crm_label('contact_status', $c['status'])
+                . '. Your call was not saved. Press "Skip for now" to carry on.');
+        }
         crm_insert('sales_calls', ['contact_id' => $id, 'user_id' => $u['id'], 'user_name' => $u['full_name'], 'outcome' => $outcome,
             'notes' => $notes ?: null, 'created_at' => crm_now()]);
         crm_q('UPDATE event_contacts SET status = ?, callback_at = ?, attempts = attempts + 1, last_called_at = ?, last_outcome = ?, claimed_by = NULL, claimed_at = NULL,
@@ -474,10 +559,21 @@ function crm_action_sales_release()
 function crm_action_sales_staff()
 {
     $o = crm_in_int('office_id');
-    $rows = crm_all("SELECT id, full_name, role FROM users WHERE status = 'active' AND office_id = ? AND role IN ('adviser','manager','administrator','admin')
+    $rows = crm_all("SELECT id, full_name, role, advice_type FROM users WHERE status = 'active' AND office_id = ? AND role IN ('adviser','manager','administrator','admin')
         AND is_office_account = 0 ORDER BY full_name", [$o]);
-    $office = crm_all("SELECT id, full_name, role FROM users WHERE status = 'active' AND office_id = ? AND is_office_account = 1", [$o]);
+    $office = crm_all("SELECT id, full_name, role, advice_type FROM users WHERE status = 'active' AND office_id = ? AND is_office_account = 1", [$o]);
     crm_ok(['rows' => array_merge($rows, $office)]);
+}
+
+/** Refuses a hand-over of someone already handed over, erased, or who can't be called. */
+function crm_sales_check_handover(array $c)
+{
+    if ($c['handed_lead_id']) {
+        crm_fail(409, 'handed', 'This contact has already been handed over.');
+    }
+    if ($c['erased_at'] || in_array($c['status'], ['do_not_call', 'wrong_number'], true)) {
+        crm_fail(409, 'closed', 'This contact can\'t be handed over.');
+    }
 }
 
 /** POST salesHandover: { contact_id, office_id, adviser_id, administrator_id, enquiry_type, notes } — becomes a new lead with the full call history. */
@@ -491,12 +587,7 @@ function crm_action_sales_handover()
     $type = crm_in_str('enquiry_type', 30);
     $notes = crm_clean((string) crm_in('notes', ''), 2000, true);
     $c = crm_sales_find_contact($id);
-    if ($c['handed_lead_id']) {
-        crm_fail(409, 'handed', 'This contact has already been handed over.');
-    }
-    if ($c['erased_at'] || in_array($c['status'], ['do_not_call', 'wrong_number'], true)) {
-        crm_fail(409, 'closed', 'This contact can\'t be handed over.');
-    }
+    crm_sales_check_handover($c);
     if (!crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$officeId])) {
         crm_fail(400, 'invalid', 'Choose the office.', 'office_id');
     }
@@ -509,12 +600,25 @@ function crm_action_sales_handover()
     if ($type !== '' && !isset(crm_enums()['enquiry_type'][$type])) {
         crm_fail(400, 'invalid', 'Choose what they are interested in.', 'enquiry_type');
     }
+    // A protection-only adviser never sees mortgage leads (or their tasks), so they can't be given one.
+    if ($type !== '' && !in_array($type, CRM_PROTECTION_ENQUIRIES, true)) {
+        foreach (['adviser_id' => $adviserId, 'administrator_id' => $adminId] as $field => $uid) {
+            if ($uid && crm_val('SELECT advice_type FROM users WHERE id = ?', [$uid]) === 'protection') {
+                crm_fail(400, 'invalid', crm_user_name($uid) . ' gives protection advice only, so they can\'t take this enquiry ('
+                    . crm_label('enquiry_type', $type) . '). Choose someone else.', $field);
+            }
+        }
+    }
     $event = crm_one('SELECT * FROM events WHERE id = ?', [$c['event_id']]);
-    $leadId = crm_tx(function () use ($u, $c, $event, $officeId, $adviserId, $adminId, $type, $notes) {
+    $leadId = crm_tx(function () use ($u, $id, $event, $officeId, $adviserId, $adminId, $type, $notes) {
+        // Checked again in the write transaction, so two agents handing the same person over at once make one lead, not two.
+        $c = crm_sales_find_contact($id);
+        crm_sales_check_handover($c);
         $GLOBALS['crm_office_id'] = $officeId;   // the lead belongs to the chosen office
         $lines = ['Handed over by ' . $u['full_name'] . ' (General Sales) from the event "' . $event['name'] . '"'
             . ($event['event_date'] ? ' on ' . date('j M Y', strtotime($event['event_date'])) : '') . '.'];
-        if ($c['interest']) {
+        // The hand-over form fills the notes with "Interested in: …" already; don't repeat it.
+        if ($c['interest'] && strpos($notes, 'Interested in: ' . $c['interest']) === false) {
             $lines[] = 'Interested in: ' . $c['interest'];
         }
         if ($notes !== '') {

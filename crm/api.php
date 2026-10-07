@@ -124,6 +124,7 @@ $routes = [
     'adminSettings'  => ['GET',  'crm_action_admin_settings', 'webadmin'],
     'adminSettingsSave' => ['POST', 'crm_action_admin_settings_save', 'webadmin'],
     'adminRecoveryNew' => ['POST', 'crm_action_admin_recovery_new', 'webadmin'],
+    'adminTestEmail' => ['POST', 'crm_action_admin_test_email', 'webadmin'],
     'adminDatabase'  => ['GET',  'crm_action_admin_database', 'webadmin'],
     'adminBackupAll' => ['GET',  'crm_action_admin_backup_all', 'webadmin'],
 ];

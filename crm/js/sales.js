@@ -43,7 +43,7 @@ function editContact(eventId, c, onSaved) {
         busy(btn, true, 'Saving…');
         try {
           const data = readForm($('form', el), CONTACT_FIELDS);
-          await apiPost('salesContactSave', Object.assign({ id: c ? c.id : 0, event_id: eventId }, data));
+          await apiPost('salesContactSave', Object.assign({ id: c ? c.id : 0, event_id: eventId, version: c ? c.version : null }, data));
           close(); toast('Saved'); onSaved();
         } catch (err) { busy(btn, false); showFormError(el, err); }
       });
@@ -68,7 +68,8 @@ function handoverModal(contact, onDone) {
         if (!o.value) return;
         try {
           const res = await apiGet('salesStaff', { office_id: o.value });
-          const opts = (roles) => res.rows.filter((u) => roles.includes(u.role)).map((u) => h`<option value="${u.id}">${u.full_name}</option>`);
+          // Protection-only staff are marked: a mortgage enquiry can't go to them.
+          const opts = (roles) => res.rows.filter((u) => roles.includes(u.role)).map((u) => h`<option value="${u.id}">${u.full_name}${u.advice_type === 'protection' ? ' (protection only)' : ''}</option>`);
           setHTML(a, h`<option value="">Choose…</option>${opts(['adviser', 'manager', 'admin'])}`);
           setHTML(d, h`<option value="">None</option>${opts(['administrator', 'manager', 'admin'])}`);
           a.disabled = d.disabled = false;
@@ -161,7 +162,7 @@ async function viewSalesEvent({ el, params, query, stale }) {
     if (table) table.setRows(rows); else table = mountTable($('[data-t]', el), opts);
   };
   wireSegments(el, (n, v) => { state[n] = v; draw(); });
-  const find = (id) => d.contacts.find((c) => c.id === +id);
+  const find = (id) => d.contacts.find((c) => +c.id === +id);
   on(el, 'click', '[data-hand]', (e, b) => handoverModal(find(b.dataset.hand), reload));
   on(el, 'click', '[data-edit]', (e, b) => editContact(ev.id, find(b.dataset.edit), reload));
   on(el, 'click', '[data-remove]', async (e, b) => {
@@ -170,7 +171,7 @@ async function viewSalesEvent({ el, params, query, stale }) {
   });
   on(el, 'click', '[data-erase]', async (e, b) => {
     const c = find(b.dataset.erase);
-    if (!(await confirmBox({ title: 'Erase personal data?', typed: 'ERASE', danger: true, confirmText: 'Erase permanently', message: `GDPR right to erasure: ${fullName(c)}'s name, phone, email and call notes are removed for good, and they will never be called again.` }))) return;
+    if (!(await confirmBox({ title: 'Erase personal data?', typed: 'ERASE', danger: true, confirmText: 'Erase permanently', message: `GDPR right to erasure: ${fullName(c)}'s name, phone, email and call notes are removed for good. If they are on a sign-up list you import later, they will be added again.` }))) return;
     try { await apiPost('salesContactErase', { id: c.id, confirm: 'ERASE' }); toast('Personal data erased'); reload(); } catch (err) { showError(err); }
   });
   on(el, 'click', '[data-act]', async (e, b) => {

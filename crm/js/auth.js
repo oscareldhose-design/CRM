@@ -76,6 +76,7 @@ function authAlert(root, message, kind = 'bad') {
   if (!message) { box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
   box.className = `alert alert-${kind}`;
+  box.setAttribute('role', kind === 'bad' || kind === 'warn' ? 'alert' : 'status'); // read out by screen readers
   setHTML(box, h`${icon(kind === 'ok' ? 'check' : kind === 'info' ? 'info' : 'alert')}<div class="alert-text">${message}</div>`);
 }
 
@@ -152,11 +153,11 @@ function requestPanel() {
     <p class="sub">For MAP staff with a <b>@${domain}</b> email address. The MAP admin approves every request before it can be used.</p>
     <form class="auth-form" id="requestForm" novalidate>
       <div class="alert" data-auth-alert hidden></div>
-      <div class="field"><label for="rq-name">Full name</label><div class="input-icon">${icon('user')}<input class="input" id="rq-name" name="full_name" autocomplete="name" required></div><div class="field-error" hidden></div></div>
+      <div class="field"><label for="rq-name">Full name</label><div class="input-icon">${icon('user')}<input class="input" id="rq-name" name="full_name" autocomplete="name" maxlength="80" required></div><div class="field-error" hidden></div></div>
       <div class="field"><label for="rq-email">MAP email address</label>
         <div class="domain-input"><input class="input" id="rq-email" name="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="firstname.lastname" required><span class="suffix">@${domain}</span></div>
         <div class="field-hint">Only @${domain} addresses can request an account.</div><div class="field-error" hidden></div></div>
-      <div class="field"><label for="rq-user">Choose a username</label><div class="input-icon">${icon('key')}<input class="input" id="rq-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></div>
+      <div class="field"><label for="rq-user">Choose a username</label><div class="input-icon">${icon('key')}<input class="input" id="rq-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required></div>
         <div class="field-hint">You'll sign in with this. Letters, numbers, dots or dashes.</div><div class="field-error" hidden></div></div>
       <fieldset class="field advice-choice"><legend class="label">What advice do you give?</legend>
         <label class="choice"><input type="radio" name="advice_type" value="mortgage_protection" required><span><b>Mortgage & protection</b><small>Mortgages, protection and insurance</small></span></label>
@@ -170,6 +171,7 @@ function requestPanel() {
       <button class="btn btn-primary btn-lg btn-block" type="submit">${icon('send')}Send request</button>
     </form>`;
 }
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/;
 function wireRequest(root) {
   const form = $('#requestForm', root);
   const domain = (S.status && S.status.domain) || 'themaap.co.uk';
@@ -183,7 +185,11 @@ function wireRequest(root) {
       const dom = v.slice(at + 1).toLowerCase();
       if (dom === domain) { v = v.slice(0, at); form.email.value = v; }
     }
-    if (!userTouched) form.username.value = v.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, 32);
+    if (!userTouched) {
+      // Suggest the username only while it would be accepted (3–32 letters, numbers, dots, dashes or underscores).
+      const s = v.split('@')[0].toLowerCase().replace(/[^a-z0-9._-]/g, '').replace(/^[._-]+/, '').slice(0, 32);
+      form.username.value = USERNAME_RE.test(s) ? s : '';
+    }
   });
   const fieldErr = (name, msg) => {
     const el = form.querySelector(`[name="${name}"]`);
@@ -202,10 +208,17 @@ function wireRequest(root) {
     e.preventDefault();
     clearErrors(form);
     authAlert(root, '');
+    // Checked in the order the boxes are on screen, with the same rules as the server.
+    if (form.full_name.value.trim().length < 2) return fieldErr('full_name', 'Enter your full name.');
     const local = form.email.value.trim();
     if (local.includes('@')) return fieldErr('email', `Use your @${domain} email address.`);
-    if (!/^[A-Za-z0-9._%+'-]+$/.test(local)) return fieldErr('email', 'Enter the first part of your MAP email address.');
-    if (form.full_name.value.trim().length < 2) return fieldErr('full_name', 'Enter your full name.');
+    if (!local) return fieldErr('email', 'Enter the first part of your MAP email address.');
+    if (!/^[a-z0-9][a-z0-9._%+'-]{0,63}$/i.test(local) || local.includes('..') || local.endsWith('.')) {
+      return fieldErr('email', 'Check the first part of your email address: letters, numbers and single dots, e.g. firstname.lastname.');
+    }
+    if (!USERNAME_RE.test(form.username.value.trim().toLowerCase())) {
+      return fieldErr('username', 'Usernames are 3–32 characters: letters, numbers, dots, dashes or underscores, starting with a letter or number.');
+    }
     const advice = form.querySelector('[name="advice_type"]:checked');
     if (!advice) return fieldErr('advice_type', 'Choose "Mortgage & protection" or "Protection only".');
     if (!pwRulesOk(form.password.value)) return fieldErr('password', 'Use at least 8 characters with upper and lower case letters and a number.');

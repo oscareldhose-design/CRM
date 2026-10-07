@@ -37,7 +37,11 @@ try {
     crm_db();
     $auth = crm_current();
 } catch (CrmError $e) {
-    crm_admin_gate_page(503, 'The admin panel can\'t start', htmlspecialchars($e->getMessage(), ENT_QUOTES, 'UTF-8'));
+    $msg = isset($e->payload['message']) ? $e->payload['message'] : 'Something went wrong on the server. Please try again.';
+    crm_admin_gate_page(503, 'The admin panel can\'t start', htmlspecialchars($msg, ENT_QUOTES, 'UTF-8'));
+} catch (Throwable $e) {
+    error_log('MAP CRM: ' . get_class($e) . ' in ' . basename($e->getFile()) . ' line ' . $e->getLine() . ': ' . $e->getMessage());
+    crm_admin_gate_page(503, 'The admin panel can\'t start', 'Something went wrong on the server. Please try again in a minute.');
 }
 if (!$auth) {
     header('Location: ./?next=website-admin', true, 302);

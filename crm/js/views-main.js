@@ -217,7 +217,7 @@ async function viewLead({ el, params, stale }) {
         ['Phone', telLink(l.phone)], ['Email', mailLink(l.email)], ['Looking for', label('enquiry_type', l.enquiry_type)], ['Timescale', label('timescale', l.timescale)],
         ...(isProtectionOnly() ? [] : [['Loan amount', money(l.loan_amount)], ['Property value', money(l.property_value)], ['Deposit', money(l.deposit)], ['Loan to value', ltv(l.loan_amount, l.property_value)]]),
         ['Employment', label('employment', l.employment)], ['Credit history', label('credit_issues', l.credit_issues)], ['Source', label('source', l.source)],
-        ['Introducer', l.introducer_id ? h`<a href="#/introducers/${l.introducer_id}">${(S.meta.introducers.find((i) => i.id === l.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
+        ['Introducer', l.introducer_id ? h`<a href="#/introducers/${l.introducer_id}">${(S.meta.introducers.find((i) => +i.id === +l.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
         ['Adviser', userName(l.adviser_id)], ['Administrator', userName(l.administrator_id)], ['Added', fmtDateTime(l.created_at)], ['Lead score', `${l.score} / 100 (${l.rating})`],
       ])}${l.notes ? h`<div class="mt"><div class="label">Notes</div><div class="pre mt-sm">${l.notes}</div></div>` : ''}</div></section>
       <section class="card"><div class="card-head"><h2>Tasks</h2><button class="btn btn-ghost btn-sm" type="button" data-act="task">${icon('plus')}Add task</button></div><div class="card-body" data-tasks>${tasksHtml(d.tasks)}</div></section>
@@ -282,7 +282,7 @@ async function viewClients({ el, query }) {
         { k: 'last_name', label: 'Client', value: (r) => `${r.last_name} ${r.first_name}`, render: (r) => h`<div class="t-title">${fullName(r)}${r.erased_at ? h` <span class="badge">Erased</span>` : ''}</div><div class="t-sub">${r.email || ''}</div>`, exportValue: fullName },
         { k: 'phone', label: 'Phone' }, { k: 'postcode', label: 'Postcode' },
         { k: 'adviser_id', label: 'Adviser', value: (r) => userName(r.adviser_id) },
-        { k: 'active_cases', label: 'Live cases', right: true, value: (r) => +r.active_cases },
+        ...(isProtectionOnly() ? [] : [{ k: 'active_cases', label: 'Live cases', right: true, value: (r) => +r.active_cases }]),
         { k: 'policies_in_force', label: 'Policies', right: true, value: (r) => +r.policies_in_force },
         { k: 'last_contact_at', label: 'Last contact', render: (r) => (r.last_contact_at ? relTime(r.last_contact_at) : h`<span class="muted">Never</span>`), exportValue: (r) => fmtDate(r.last_contact_at) },
         { k: 'next_review_date', label: 'Review due', render: (r) => fmtDate(r.next_review_date) },
@@ -351,7 +351,7 @@ async function viewClient({ el, params, query, stale }) {
       <section class="card"><div class="card-head"><div><h2>Plans held elsewhere</h2><div class="sub">${isProtectionOnly() ? 'Cover and pensions with other firms' : 'Cover, pensions and mortgages with other firms'}</div></div></div><div class="card-body">${c.existing_plans ? h`<div class="pre">${c.existing_plans}</div>` : h`<p class="muted">None recorded.</p>`}</div></section>
       <section class="card"><div class="card-head"><h2>Relationship</h2></div><div class="card-body">${kvHtml([
         ['Adviser', userName(c.adviser_id)], ['Administrator', userName(c.administrator_id)], ['Source', label('source', c.source)],
-        ['Introducer', c.introducer_id ? h`<a href="#/introducers/${c.introducer_id}">${(S.meta.introducers.find((i) => i.id === c.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
+        ['Introducer', c.introducer_id ? h`<a href="#/introducers/${c.introducer_id}">${(S.meta.introducers.find((i) => +i.id === +c.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
         ['Next review', fmtDate(c.next_review_date)], ['Marketing consent', c.marketing_consent ? 'Yes' : 'No'], ['Client since', fmtDate(c.created_at)],
         ['Original lead', d.lead ? h`<a href="#/leads/${d.lead.id}">${d.lead.rating} lead, ${fmtDate(d.lead.created_at)}</a>` : ''],
       ])}${c.notes ? h`<div class="mt"><div class="label">Notes</div><div class="pre mt-sm">${c.notes}</div></div>` : ''}</div></section>
@@ -499,11 +499,11 @@ async function viewCase({ el, params, stale }) {
     try { await apiPost('complianceSet', { case_id: c.id, key: cb.dataset.comp, done: cb.checked }); reload(); } catch (err) { cb.checked = !cb.checked; showError(err); }
   });
   on(el, 'change', '[data-doc-status]', async (e, sel) => {
-    const doc = d.documents.find((x) => x.id === +sel.dataset.docStatus);
+    const doc = d.documents.find((x) => +x.id === +sel.dataset.docStatus);
     try { await apiPost('save', { entity: 'documents', id: doc.id, version: doc.version, data: { status: sel.value } }); toast(`${doc.name}: ${label('document_status', sel.value)}`); reload(); } catch (err) { showError(err); reload(); }
   });
   on(el, 'click', '[data-doc-edit]', (e, b) => {
-    const doc = d.documents.find((x) => x.id === +b.dataset.docEdit);
+    const doc = d.documents.find((x) => +x.id === +b.dataset.docEdit);
     editRecord({ entity: 'documents', record: doc, fields: FIELDS.documents, title: doc.name, onSaved: reload });
   });
   on(el, 'click', '[data-act]', async (e, b) => {

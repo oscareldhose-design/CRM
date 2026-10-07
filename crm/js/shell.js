@@ -15,6 +15,13 @@ function leadFields() {
   return FIELDS.leads.filter((f) => !MORTGAGE_LEAD_FIELDS.includes(f.k)).map((f) => (f.k === 'enquiry_type'
     ? Object.assign({}, f, { opts: enumOptions('enquiry_type').filter(([k]) => PROTECTION_ENQUIRIES.includes(k)) }) : f));
 }
+const MORTGAGE_PLACEHOLDERS = ['lender', 'loan_amount', 'property_address', 'completion_date', 'fixed_rate_end_date'];
+/** Email template form; protection-only advisers are not shown the mortgage placeholders. */
+function templateFields() {
+  const names = ['first_name', 'last_name', 'full_name', 'my_name', 'adviser_name', 'office_name', ...(isProtectionOnly() ? [] : MORTGAGE_PLACEHOLDERS), 'today'];
+  const hint = 'Placeholders: ' + names.map((n) => `{{${n}}}`).join(' ');
+  return FIELDS.templates.map((f) => (f.k === 'body' ? Object.assign({}, f, { hint }) : f));
+}
 
 /* ---------- Record forms (shared by lists, detail pages and quick add) ---------- */
 const FIELDS = {
@@ -28,7 +35,8 @@ const FIELDS = {
     { k: 'loan_amount', label: 'Loan amount (£)', type: 'money' }, { k: 'property_value', label: 'Property value (£)', type: 'money' },
     { k: 'deposit', label: 'Deposit (£)', type: 'money' }, { k: 'employment', label: 'Employment', type: 'select', opts: 'employment' },
     { k: 'credit_issues', label: 'Credit history', type: 'select', opts: 'credit_issues' },
-    { k: 'status', label: 'Status', type: 'select', opts: [['new', 'New'], ['contacted', 'Contacted'], ['qualified', 'Qualified'], ['lost', 'Lost']], default: 'new' },
+    { k: 'status', label: 'Status', type: 'select', opts: [['new', 'New'], ['contacted', 'Contacted'], ['qualified', 'Qualified'], ['lost', 'Lost']], default: 'new',
+      currentOnly: [['converted', 'Converted']] }, // only "Convert to client" converts a lead, but a converted lead stays editable
     { type: 'section', label: 'Who looks after it' },
     { k: 'adviser_id', label: 'Adviser', type: 'user' }, { k: 'administrator_id', label: 'Administrator', type: 'user' },
     { k: 'notes', label: 'Notes', type: 'textarea' },
@@ -109,8 +117,7 @@ const FIELDS = {
   templates: [
     { k: 'name', label: 'Template name', req: true }, { k: 'category', label: 'Category', placeholder: 'e.g. Leads, Cases, Protection' },
     { k: 'subject', label: 'Subject', req: true, full: true },
-    { k: 'body', label: 'Email text', type: 'textarea', req: true, rows: 12,
-      hint: 'Placeholders: {{first_name}} {{last_name}} {{full_name}} {{my_name}} {{adviser_name}} {{office_name}} {{lender}} {{loan_amount}} {{property_address}} {{completion_date}} {{fixed_rate_end_date}} {{today}}' },
+    { k: 'body', label: 'Email text', type: 'textarea', req: true, rows: 12 }, // hint: see templateFields()
   ],
 };
 async function clientOptions() {
@@ -179,15 +186,15 @@ function renderShell() {
   const me = S.me;
   const officeChip = isAdmin()
     ? h`<label class="office-chip">${icon('building')}<div class="grow"><span class="tiny muted">Viewing office</span>
-        <select data-switch-office aria-label="Switch office">${S.meta.offices.map((o) => h`<option value="${o.id}" ${S.meta.office && o.id === S.meta.office.id ? raw('selected') : ''}>${o.name}</option>`)}</select></div></label>`
+        <select data-switch-office aria-label="Switch office">${S.meta.offices.map((o) => h`<option value="${o.id}" ${S.meta.office && +o.id === +S.meta.office.id ? raw('selected') : ''}>${o.name}</option>`)}</select></div></label>`
     : h`<div class="office-chip">${icon(me.role === 'sales' ? 'megaphone' : 'building')}<div><span class="tiny muted">${me.role === 'sales' ? 'Team' : 'Office'}</span><b>${me.role === 'sales' ? 'General Sales' : S.officeName}</b></div></div>`;
-  setHTML($('#app'), h`
+  setHTML($('#app'), h`<div class="shell">
     <aside class="sidebar" id="sidebar" aria-label="Main menu">
       <a class="brand" href="#/${me.role === 'sales' ? 'sales' : 'dashboard'}" aria-label="MAP: go to the start page"><img src="assets/map-logo.svg" alt="MAP" width="56" height="60"></a>
       ${officeChip}
       <nav class="nav" id="nav">${navGroups().map((g) => h`<div class="nav-group"><div class="nav-label">${g.label}</div>
         ${g.items.map(([path, text, ic]) => h`<a href="#/${path}" data-nav="${path}">${icon(ic)}<span>${text}</span></a>`)}</div>`)}</nav>
-      <div class="side-foot"><div class="avatar">${initials(me.full_name)}</div><div class="who"><b>${me.full_name}</b><span>${me.is_office_account ? 'Office login' : me.role_label}</span></div>
+      <div class="side-foot"><div class="avatar">${initials(me.full_name)}</div><div class="who"><b>${me.full_name}</b><span>${+me.is_office_account ? 'Office login' : me.role_label}</span></div>
         <a class="icon-btn" href="#/account" aria-label="My account" title="My account">${icon('user')}</a>
         <button class="icon-btn" type="button" data-signout aria-label="Sign out" title="Sign out">${icon('logout')}</button></div>
     </aside>
@@ -200,7 +207,7 @@ function renderShell() {
           <button class="go" type="button" data-focus-search aria-label="Search">${icon('search', 'ic-sm')}</button><div class="search-results hidden" id="searchResults"></div></div>` : raw('<div class="grow"></div>')}
         <div class="top-actions">
           ${isOffice() && !isProtectionOnly() ? h`<button class="icon-btn hide-sm" type="button" data-lookup title="Quick Case Lookup (all offices)" aria-label="Quick Case Lookup">${icon('globe')}</button>` : ''}
-          <div style="position:relative"><button class="icon-btn" type="button" data-bell aria-label="Notifications" title="Notifications">${icon('bell')}<span class="dot hidden" id="bellDot"></span></button><div id="bellPop"></div></div>
+          <div class="bell-wrap"><button class="icon-btn" type="button" data-bell aria-label="Notifications" title="Notifications">${icon('bell')}<span class="dot hidden" id="bellDot"></span></button><div id="bellPop"></div></div>
           <button class="icon-btn" type="button" data-toggle-theme aria-label="Light or dark mode" title="Light or dark mode"><span data-theme-icon>${icon(getTheme() === 'dark' ? 'sun' : 'moon')}</span></button>
         </div>
       </header>
@@ -208,15 +215,17 @@ function renderShell() {
       <div class="compliance-banner">MAP Operating System · ${S.officeName || 'General Sales'} · Advice and suitability always stay with the adviser.</div>
     </div>
     <button class="fab" type="button" data-fab aria-label="Quick add" title="Quick add">${icon('plus')}</button>
-    <div id="fabMenu"></div>`);
+    <div id="fabMenu"></div></div>`);
   wireShell();
 }
 function setNavOpen(open) {
   $('#sidebar').classList.toggle('open', open);
   $('[data-close-nav]').classList.toggle('hidden', !open);
 }
+let shellDocWired = false;
 function wireShell() {
-  const app = $('#app');
+  // Listeners go on the new .shell element, so signing out and back in (same tab) never doubles them up.
+  const app = $('#app > .shell');
   on(app, 'click', '[data-open-nav]', () => setNavOpen(true));
   on(app, 'click', '[data-close-nav]', () => setNavOpen(false));
   on(app, 'click', '[data-signout]', signOut);
@@ -240,6 +249,8 @@ function wireShell() {
   });
   const input = $('#globalSearch');
   if (input) wireSearch(input);
+  if (shellDocWired) return;
+  shellDocWired = true;
   document.addEventListener('keydown', (e) => {
     if (e.key === '/' && !e.target.closest('input, textarea, select, [contenteditable]') && $('#globalSearch')) { e.preventDefault(); $('#globalSearch').focus(); }
   });
@@ -256,11 +267,12 @@ function wireSearch(input) {
   let items = [], active = -1, seq = 0;
   const typeIcon = { lead: 'lead', client: 'user', case: 'home', policy: 'shield', introducer: 'handshake' };
   const draw = () => {
-    if (!input.value.trim()) { box.classList.add('hidden'); return; }
+    if (input.value.trim().length < 2) { box.classList.add('hidden'); return; } // nothing is searched below 2 letters
     box.classList.remove('hidden');
     setHTML(box, items.length ? h`${items.map((r, i) => h`<a href="${r.link}" class="${i === active ? 'active' : ''}"><span class="sr-type">${icon(typeIcon[r.type] || 'search', 'ic-sm')}</span>
       <span class="grow"><span class="li-title">${r.title}</span><br><span class="li-sub">${r.sub}</span></span></a>`)}`
-      : h`<div class="empty" style="padding:18px">No matches in ${S.officeName}. Try Quick Case Lookup ${icon('globe', 'ic-sm')} to search every office.</div>`);
+      : h`<div class="empty" style="padding:18px">No matches in ${S.officeName}.${isProtectionOnly() ? ''
+        : h` Try <button type="button" class="link-btn" data-lookup>Quick Case Lookup</button> to search every office.`}</div>`);
   };
   const run = debounce(async () => {
     const q = input.value.trim();
@@ -276,7 +288,10 @@ function wireSearch(input) {
     if (e.key === 'Enter' && items[active >= 0 ? active : 0]) { location.hash = items[active >= 0 ? active : 0].link; box.classList.add('hidden'); input.blur(); }
     if (e.key === 'Escape') { box.classList.add('hidden'); input.blur(); }
   });
-  box.addEventListener('click', (e) => { if (e.target.closest('a')) { box.classList.add('hidden'); input.value = ''; items = []; } });
+  box.addEventListener('click', (e) => {
+    if (e.target.closest('a')) { box.classList.add('hidden'); input.value = ''; items = []; }
+    if (e.target.closest('[data-lookup]')) box.classList.add('hidden');
+  });
 }
 
 /* ---------- Notifications ---------- */
@@ -311,7 +326,8 @@ function toggleFab() {
   const m = $('#fabMenu');
   if (m.innerHTML) { setHTML(m, ''); return; }
   const items = isOffice()
-    ? [['lead', 'New lead', 'lead'], ['client', 'New client', 'user'], ...(isProtectionOnly() ? [] : [['case', 'New mortgage case', 'home']]), ['policy', 'New policy', 'shield'], ['task', 'New task', 'calendar'], ['log', 'Log a call or note', 'phone']]
+    ? [['lead', 'New lead', 'lead'], ['client', 'New client', 'user'], ...(isProtectionOnly() ? [] : [['case', 'New mortgage case', 'home']]), ['policy', 'New policy', 'shield'], ['task', 'New task', 'calendar'], ['log', 'Log a call or note', 'phone'],
+      ...(isProtectionOnly() ? [] : [['lookup', 'Quick Case Lookup', 'globe']])]
     : [['event', 'New event', 'megaphone'], ['queue', 'Open the call queue', 'phone']];
   setHTML(m, h`<div class="fab-menu" role="menu">${items.map(([k, t, ic]) => h`<button type="button" role="menuitem" data-quick="${k}">${icon(ic)}${t}</button>`)}</div>`);
   on(m, 'click', '[data-quick]', (e, b) => {
@@ -323,6 +339,7 @@ function toggleFab() {
     if (k === 'policy') newPolicy();
     if (k === 'task') openTask(null, null, () => router());
     if (k === 'log') quickLog();
+    if (k === 'lookup') openLookup();
     if (k === 'event') editEvent(null);
     if (k === 'queue') location.hash = '#/sales/queue';
   });
@@ -411,7 +428,8 @@ async function router() {
     const pp = pattern.split('/'), hp = path.split('/');
     if (pp.length !== hp.length) continue;
     const p = {};
-    if (pp.every((seg, i) => (seg.startsWith(':') ? ((p[seg.slice(1)] = decodeURIComponent(hp[i])), true) : seg === hp[i]))) { match = [fn, access]; params = p; break; }
+    const decode = (x) => { try { return decodeURIComponent(x); } catch (e) { return null; } }; // a broken link is "no match"
+    if (pp.every((seg, i) => (seg.startsWith(':') ? (p[seg.slice(1)] = decode(hp[i])) !== null : seg === hp[i]))) { match = [fn, access]; params = p; break; }
   }
   const allowed = (access) => access === 'user' || (access === 'office' && isOffice()) || (access === 'mortgage' && isOffice() && !isProtectionOnly())
     || (access === 'manager' && isManager()) || (access === 'sales' && canSales());
@@ -459,7 +477,7 @@ function timelineHtml(acts) {
   if (!acts || !acts.length) return emptyState('history', 'No history yet', 'Calls, notes and emails you log appear here.');
   return h`<div class="timeline">${acts.map((a) => h`<div class="tl-item"><div class="tl-icon ${a.type === 'system' ? 'system' : ''}">${icon(ACT_ICON[a.type] || 'note', 'ic-sm')}</div>
     <div><div class="tl-head"><b>${label('activity_type', a.type)}${a.outcome ? ': ' + a.outcome : ''}</b><span>${a.user_name || 'CRM'}</span><span title="${fmtDateTime(a.created_at)}">${relTime(a.created_at)}</span>
-      ${a.user_id === S.me.id || isManager() ? h`<button class="link-btn tiny" type="button" data-del-activity="${a.id}" style="margin-left:auto">Remove</button>` : ''}</div>
+      ${+a.user_id === +S.me.id || isManager() ? h`<button class="link-btn tiny" type="button" data-del-activity="${a.id}" style="margin-left:auto">Remove</button>` : ''}</div>
       <div class="tl-body">${a.summary}</div></div></div>`)}</div>`;
 }
 function wireTimeline(el, onChange) {
@@ -525,7 +543,7 @@ function wireTasks(el, tasks, onChange) {
     } catch (err) { showError(err); }
   });
   on(el, 'click', '[data-open-task]', (e, b) => {
-    const t = tasks().find((x) => x.id === +b.dataset.openTask);
+    const t = tasks().find((x) => +x.id === +b.dataset.openTask);
     if (t) openTask(t, null, onChange);
   });
 }
@@ -542,7 +560,8 @@ async function emailComposer(target, onDone, preferName) {
     body: h`<div class="stack"><div class="field"><label for="em-t">Template</label><select class="select" id="em-t">${templates.map((t) => h`<option value="${t.id}" ${t.id === first.id ? raw('selected') : ''}>${t.category ? t.category + ': ' : ''}${t.name}</option>`)}</select></div>
       <div class="field"><label for="em-to">To</label><input class="input" id="em-to" type="email"></div>
       <div class="field"><label for="em-s">Subject</label><input class="input" id="em-s"></div>
-      <div class="field"><label for="em-b">Email</label><textarea class="textarea" id="em-b" rows="12"></textarea></div></div>`,
+      <div class="field"><label for="em-b">Email</label><textarea class="textarea" id="em-b" rows="12"></textarea>
+        <div class="field-hint" data-long-hint hidden>This email is too long to hand to your email app in one go. "Open in email app" copies the email text first: paste it into the new message.</div></div></div>`,
     foot: h`<button class="btn btn-ghost left" type="button" data-copy-all>${icon('copy')}Copy email</button>
       <a class="btn btn-secondary" data-mailto href="#">${icon('mail')}Open in email app</a>
       <button class="btn btn-primary" type="button" data-sent>${icon('check')}Mark as sent</button>`,
@@ -556,12 +575,19 @@ async function emailComposer(target, onDone, preferName) {
         } catch (e) { showError(e); }
       };
       const updateMailto = () => {
-        const href = `mailto:${encodeURIComponent($('#em-to', el).value)}?subject=${encodeURIComponent($('#em-s', el).value)}&body=${encodeURIComponent($('#em-b', el).value).slice(0, 1800)}`;
-        $('[data-mailto]', el).setAttribute('href', href);
+        // Email apps cut off long mailto links, so a long email is copied for pasting instead of being cut short.
+        const base = `mailto:${encodeURIComponent($('#em-to', el).value)}?subject=${encodeURIComponent($('#em-s', el).value)}`;
+        const full = `${base}&body=${encodeURIComponent($('#em-b', el).value)}`;
+        const tooLong = full.length > 1900;
+        const link = $('[data-mailto]', el);
+        link.setAttribute('href', tooLong ? base : full);
+        link.dataset.long = tooLong ? '1' : '';
+        $('[data-long-hint]', el).hidden = !tooLong;
       };
       sel.addEventListener('change', load);
       el.addEventListener('input', updateMailto);
       on(el, 'click', '[data-copy-all]', () => copyText(`Subject: ${$('#em-s', el).value}\n\n${$('#em-b', el).value}`));
+      on(el, 'click', '[data-mailto]', (e, a) => { if (a.dataset.long) copyText($('#em-b', el).value); });
       on(el, 'click', '[data-sent]', async () => {
         try { await apiPost('logEmail', Object.assign({ subject: $('#em-s', el).value }, target)); close(); toast('Logged on the timeline'); if (onDone) onDone(); } catch (e) { showError(e); }
       });

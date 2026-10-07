@@ -26,16 +26,17 @@ function crm_admin_user_row(array $u)
 function crm_action_admin_users()
 {
     $rows = crm_all("SELECT * FROM users ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 WHEN 'disabled' THEN 2 ELSE 3 END, full_name COLLATE NOCASE");
-    crm_ok(['rows' => array_map('crm_admin_user_row', $rows)]);
+    crm_ok(['rows' => array_map('crm_admin_user_row', $rows), 'me' => (int) crm_user()['id']]);
 }
 
-/** Checks a role/office pair for a staff login. */
-function crm_admin_check_role_office($role, $officeId)
+/** Checks a role/office pair for a staff login. A login may keep the office it is already in, even once it is closed. */
+function crm_admin_check_role_office($role, $officeId, $currentOfficeId = null)
 {
     if (!isset(CRM_ROLES[$role]) || $role === 'admin') {
         crm_fail(400, 'invalid', 'Please choose a role.', 'role');
     }
-    if (in_array($role, CRM_OFFICE_ROLES, true) && !crm_val('SELECT id FROM offices WHERE id = ? AND active = 1', [$officeId])) {
+    $keeps = $officeId && (int) $officeId === (int) $currentOfficeId;
+    if (in_array($role, CRM_OFFICE_ROLES, true) && !crm_val('SELECT id FROM offices WHERE id = ?' . ($keeps ? '' : ' AND active = 1'), [$officeId])) {
         crm_fail(400, 'invalid', 'Please choose an office for this login.', 'office_id');
     }
 }
@@ -65,6 +66,13 @@ function crm_admin_advice($default = 'mortgage_protection')
     return $a;
 }
 
+/** Removes rejected requests that still hold this username or email, so the admin can give that person a login. */
+function crm_admin_forget_rejected($keepId, $username, $email)
+{
+    crm_q("DELETE FROM users WHERE status = 'rejected' AND id <> ? AND (username = ? OR email = ? OR email = ?)",
+        [(int) $keepId, $username, $username, $email === '' ? null : $email]);
+}
+
 /** POST adminUserSave: { id?, full_name, email, username, role, office_id, status } */
 function crm_action_admin_user_save()
 {
@@ -83,13 +91,20 @@ function crm_action_admin_user_save()
     if (!in_array($status, ['active', 'disabled'], true)) {
         crm_fail(400, 'invalid', 'Choose active or switched off.', 'status');
     }
-    crm_admin_check_role_office($role, $officeId);
     $domain = '@' . strtolower(CRM_ALLOWED_DOMAIN);
-    $existing = $id ? crm_one('SELECT * FROM users WHERE id = ?', [$id]) : null;
+    // A rejected request is not a login: it can't be edited, and it doesn't hold on to its username or email.
+    $existing = $id ? crm_one("SELECT * FROM users WHERE id = ? AND status <> 'rejected'", [$id]) : null;
     if ($id && !$existing) {
         crm_fail(404, 'not_found', 'That login could not be found.');
     }
-    $isOfficeAccount = $existing && (int) $existing['is_office_account'] === 1;
+    if ($existing && (int) $id === (int) $me['id'] && $role !== $existing['role']) {
+        crm_fail(409, 'self', 'You can\'t change the role of your own login.', 'role');
+    }
+    crm_admin_check_role_office($role, $officeId, $existing ? $existing['office_id'] : null);
+    // The built-in admin login has no email (like the office logins). If it stops being an admin, it becomes an
+    // ordinary staff login, which needs a MAP email and must not be counted as an office login.
+    $isOfficeAccount = $existing && (int) $existing['is_office_account'] === 1
+        && !($existing['role'] === 'webadmin' && $role !== 'webadmin');
     if ($email === '' && !$isOfficeAccount) {
         crm_fail(400, 'invalid', 'Enter their MAP email address.', 'email');
     }
@@ -99,10 +114,10 @@ function crm_action_admin_user_save()
     if (!preg_match('/^[a-z0-9][a-z0-9._-]{2,31}$/', $username)) {
         crm_fail(400, 'invalid', 'Usernames are 3–32 characters: letters, numbers, dots, dashes or underscores.', 'username');
     }
-    if (crm_val('SELECT id FROM users WHERE (username = ? OR email = ?) AND id <> ?', [$username, $username, $id])) {
+    if (crm_val("SELECT id FROM users WHERE (username = ? OR email = ?) AND id <> ? AND status <> 'rejected'", [$username, $username, $id])) {
         crm_fail(409, 'exists', 'That username is taken.', 'username');
     }
-    if ($email !== '' && crm_val('SELECT id FROM users WHERE email = ? AND id <> ?', [$email, $id])) {
+    if ($email !== '' && crm_val("SELECT id FROM users WHERE email = ? AND id <> ? AND status <> 'rejected'", [$email, $id])) {
         crm_fail(409, 'exists', 'There is already a login with that email.', 'email');
     }
     $now = crm_now();
@@ -114,8 +129,9 @@ function crm_action_admin_user_save()
         if ($existing['status'] === 'pending') {
             crm_fail(409, 'pending', 'Approve or reject this request first.');
         }
-        crm_q('UPDATE users SET full_name = ?, email = ?, username = ?, role = ?, office_id = ?, status = ?, advice_type = ?, updated_at = ? WHERE id = ?',
-            [$fullName, $email === '' ? null : $email, $username, $role, $officeId, $status, $advice, $now, $id]);
+        crm_admin_forget_rejected($id, $username, $email);
+        crm_q('UPDATE users SET full_name = ?, email = ?, username = ?, role = ?, office_id = ?, status = ?, advice_type = ?, is_office_account = ?, updated_at = ? WHERE id = ?',
+            [$fullName, $email === '' ? null : $email, $username, $role, $officeId, $status, $advice, $isOfficeAccount ? 1 : 0, $now, $id]);
         if ($status !== 'active') {
             crm_q('DELETE FROM sessions WHERE user_id = ?', [$id]);
         }
@@ -128,10 +144,11 @@ function crm_action_admin_user_save()
         crm_audit('user_update', 'users', $id, 'Updated login for ' . $fullName, $changes ?: null, $officeId);
         crm_ok(['user' => crm_admin_user_row(crm_one('SELECT * FROM users WHERE id = ?', [$id]))]);
     }
+    crm_admin_forget_rejected(0, $username, $email);
     $temp = crm_random_password();
     $newId = crm_insert('users', [
         'username' => $username, 'email' => $email, 'full_name' => $fullName, 'password_hash' => password_hash($temp, PASSWORD_DEFAULT),
-        'role' => $role, 'office_id' => $officeId, 'status' => 'active', 'must_change_password' => 1, 'advice_type' => $advice,
+        'role' => $role, 'office_id' => $officeId, 'status' => $status, 'must_change_password' => 1, 'advice_type' => $advice,
         'decided_by' => $me['id'], 'decided_at' => $now, 'password_changed_at' => $now, 'created_at' => $now, 'updated_at' => $now,
     ]);
     crm_audit('user_create', 'users', $newId, 'Created a ' . CRM_ROLES[$role] . ' login for ' . $fullName, null, $officeId);
@@ -175,6 +192,10 @@ function crm_action_admin_user_reject()
 function crm_action_admin_user_reset()
 {
     $id = crm_in_int('id');
+    if ($id === (int) crm_user()['id']) {
+        // Resetting your own password would sign you out before you could read the temporary one.
+        crm_fail(409, 'self', 'To change your own password, use the "Password" button at the top of the panel.');
+    }
     $u = crm_one("SELECT * FROM users WHERE id = ? AND status IN ('active', 'disabled')", [$id]);
     if (!$u) {
         crm_fail(404, 'not_found', 'That login could not be found.');
@@ -297,19 +318,50 @@ function crm_action_admin_backup_all()
     crm_download('map-crm-backup-all-offices-' . date('Y-m-d-His') . '.json', 'application/json', json_encode($out, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_INVALID_UTF8_SUBSTITUTE));
 }
 
+/** Copies the database file to $tmp while holding the write lock, so nothing changes mid-copy (SQLite before 3.27). */
+function crm_admin_copy_database_file($tmp)
+{
+    $db = crm_db();
+    $file = $GLOBALS['crm_db_file'];
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        // In WAL mode the latest changes may still be in the -wal file; it is copied too and read when the copy opens.
+        $ok = @copy($file, $tmp) && (!is_file($file . '-wal') || @copy($file . '-wal', $tmp . '-wal'));
+    } finally {
+        $db->exec('COMMIT');
+    }
+    return $ok;
+}
+
 /** GET adminDatabase: downloads a consistent copy of the whole SQLite database. */
 function crm_action_admin_database()
 {
     $tmp = CRM_DATA_DIR . '/export-' . bin2hex(random_bytes(8)) . '.sqlite';
+    $content = false;
     try {
-        crm_db()->exec('VACUUM INTO ' . crm_db()->quote($tmp));
-        $copy = new PDO('sqlite:' . $tmp, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $copy->exec("DELETE FROM sessions; DELETE FROM login_failures; DELETE FROM settings WHERE key = 'recovery_pending'; VACUUM;");
-        $copy = null;
-        $content = file_get_contents($tmp);
-    } finally {
-        if (is_file($tmp)) {
+        try {
+            crm_db()->exec('VACUUM INTO ' . crm_db()->quote($tmp));
+            $made = true;
+        } catch (PDOException $e) {
+            // VACUUM INTO needs SQLite 3.27 or newer; older servers copy the file instead.
             @unlink($tmp);
+            $made = crm_admin_copy_database_file($tmp);
+        }
+        if ($made) {
+            $copy = new PDO('sqlite:' . $tmp, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $copy->exec("DELETE FROM sessions; DELETE FROM login_failures; DELETE FROM settings WHERE key = 'recovery_pending'; VACUUM;");
+            $copy->query('PRAGMA journal_mode = DELETE')->fetchAll(); // everything in the one file
+            $copy = null;
+            $content = file_get_contents($tmp);
+        }
+    } catch (PDOException $e) {
+        error_log('MAP CRM: database download failed: ' . $e->getMessage());
+        $content = false;
+    } finally {
+        foreach (['', '-wal', '-shm', '-journal'] as $ext) {
+            if (is_file($tmp . $ext)) {
+                @unlink($tmp . $ext);
+            }
         }
     }
     if ($content === false) {
@@ -317,4 +369,20 @@ function crm_action_admin_database()
     }
     crm_audit('backup', null, null, 'Downloaded the full database file');
     crm_download('map-crm-database-' . date('Y-m-d-His') . '.sqlite', 'application/octet-stream', $content);
+}
+
+/** POST adminTestEmail: sends a test email to the address that gets login requests, so the admin can check email works. */
+function crm_action_admin_test_email()
+{
+    $u = crm_user();
+    $sent = crm_mail(CRM_NOTIFY_EMAIL, 'MAP CRM test email',
+        "This is a test email from the MAP CRM, sent by " . $u['full_name'] . " from the website admin panel.\n\n"
+        . "If you can read this, emails about new login requests will reach " . CRM_NOTIFY_EMAIL . ".\n"
+        . "If it went to Junk, mark it as 'Not junk' so the real ones arrive in the inbox.\n");
+    crm_audit('test_email', 'settings', null, 'Sent a test email to ' . CRM_NOTIFY_EMAIL);
+    if (!$sent) {
+        crm_fail(502, 'mail_failed', 'The server would not send the email. Ask your web host to switch on PHP mail() for '
+            . CRM_MAIL_FROM . '. Login requests still appear here under CRM logins either way.');
+    }
+    crm_ok(['message' => 'The server sent a test email to ' . CRM_NOTIFY_EMAIL . '. Check the inbox, and the Junk folder, in the next few minutes.']);
 }
