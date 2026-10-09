@@ -467,7 +467,8 @@ async function router() {
   }
   if (!parseHash().query.get('keep')) window.scrollTo({ top: 0 });
 }
-window.addEventListener('hashchange', () => router());
+// Moving to another page (a link inside a dialog, or Back) closes any dialog left open, so it can't cover the new page.
+window.addEventListener('hashchange', () => { closeAllModals(); router(); });
 function setTitle(t) {
   document.title = `${t} · MAP Operating System`;
   const el = $('#pageTitle');

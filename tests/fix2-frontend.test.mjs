@@ -487,6 +487,22 @@ test('importing an Excel sign-up list keeps the leading 0 of phone numbers, so d
   await done(page);
 });
 
+test('a task opened from a link closes when you move to another page', { skip }, async () => {
+  const page = await newPage();
+  await signIn(page);
+  const id = await page.evaluate(async () => {
+    const r = await fetch('api.php?action=save', { method: 'POST', headers: { 'X-MAP-CRM': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ entity: 'tasks', id: 0, data: { title: 'Dialog test task' } }) });
+    return (await r.json()).record.id;
+  });
+  await page.evaluate((h) => { location.hash = h; }, `#/tasks/${id}`);
+  await page.waitForSelector('#modals .modal-layer');
+  await page.evaluate(() => { location.hash = '#/dashboard'; });
+  await page.waitForSelector('#content .page-head');
+  await page.waitForTimeout(200);
+  assert.equal(await page.$('#modals .modal-layer'), null, 'no dialog left over the dashboard');
+  await done(page);
+});
+
 test('no uncaught errors in the pages above', { skip }, () => {
   assert.deepEqual(pageErrors, []);
 });
