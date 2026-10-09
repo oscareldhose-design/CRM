@@ -101,7 +101,7 @@ function showLogin(opts = {}) {
   if (tab === 'request') wireRequest(root);
   if (tab === 'forgot') wireForgot(root);
   if (S.status && !S.status.https && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-    authAlert(root, 'This page is not using a secure (https://) connection. Ask your web host to switch on SSL before using the CRM.', 'warn');
+    authAlert(root, 'This page is not using a secure connection. Open the CRM with an address that starts https:// before signing in.', 'warn');
   }
 }
 

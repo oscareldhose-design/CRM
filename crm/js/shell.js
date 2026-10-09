@@ -123,7 +123,7 @@ const FIELDS = {
     { k: 'notes', label: 'Notes', type: 'textarea' },
   ],
   templates: [
-    { k: 'name', label: 'Template name', req: true }, { k: 'category', label: 'Category', placeholder: 'e.g. Leads, Cases, Protection' },
+    { k: 'name', label: 'Template name', req: true }, { k: 'category', label: 'Category', placeholder: isProtectionOnly() ? 'e.g. Leads, Protection, Insurance' : 'e.g. Leads, Cases, Protection' },
     { k: 'subject', label: 'Subject', req: true, full: true },
     { k: 'body', label: 'Email text', type: 'textarea', req: true, rows: 12 }, // hint: see templateFields()
   ],

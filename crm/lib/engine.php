@@ -572,8 +572,10 @@ function crm_engine_run($officeId, $force = false)
             crm_auto_task($officeId, $key, [
                 'title' => $title,
                 'notes' => 'Fixed rate ends within 6 months. Contact the client to review a product transfer or remortgage.',
-                'assigned_to' => $c['adviser_id'] ?: $cl['adviser_id'], 'client_id' => $c['client_id'], 'case_id' => $c['id'],
-                'priority' => $priority,
+                'assigned_to' => current(array_filter([$c['adviser_id'], $cl['adviser_id'], $c['administrator_id']], function ($id) {
+                    return $id && !crm_entities_protection_staff($id);
+                })) ?: null,
+                'client_id' => $c['client_id'], 'case_id' => $c['id'], 'priority' => $priority,
             ]);
         }
         // A remortgage / product transfer under way for the client actions the opportunity.

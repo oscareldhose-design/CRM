@@ -216,6 +216,20 @@ function crm_entities_protection_staff($id)
     return $id && crm_val('SELECT advice_type FROM users WHERE id = ?', [(int) $id]) === 'protection';
 }
 
+/**
+ * A protection-only login can't trash or delete a client who also has mortgage cases: those would go too, and the
+ * cases belong to the office's other advisers.
+ */
+function crm_entities_guard_other_work($entity, $id, $includeDeleted)
+{
+    if ($entity !== 'clients' || !crm_protection_only()) {
+        return;
+    }
+    if (crm_val('SELECT 1 FROM cases WHERE client_id = ? AND office_id = ?' . ($includeDeleted ? '' : ' AND deleted_at IS NULL'), [$id, crm_office_id()])) {
+        crm_fail(409, 'has_other_work', 'This client also has work with the office\'s other advisers, so they can\'t be moved to the trash or deleted from your login. Ask your office manager.');
+    }
+}
+
 /** Whether a lead, case or task (its fields) is mortgage work, which protection-only advisers never see. */
 function crm_entities_mortgage_work($entity, array $r)
 {
@@ -577,6 +591,22 @@ function crm_after_save($entity, $before, array $after)
 }
 
 /** Adds the calculated parts (risk, compliance, names) to a record for the screen. */
+/** Protection-only logins never receive a lead's mortgage figures, or which mortgage case a policy belongs to. */
+function crm_entities_strip_mortgage($entity, array $r)
+{
+    if (!crm_protection_only()) {
+        return $r;
+    }
+    if ($entity === 'leads') {
+        foreach (['loan_amount', 'property_value', 'deposit', 'credit_issues'] as $k) {
+            unset($r[$k]);
+        }
+    } elseif ($entity === 'policies') {
+        unset($r['case_id']);
+    }
+    return $r;
+}
+
 function crm_decorate($entity, array $r, $ctx = null)
 {
     if ($entity === 'cases') {
@@ -591,7 +621,7 @@ function crm_decorate($entity, array $r, $ctx = null)
     if ($entity === 'templates') {
         $r['shared'] = $r['office_id'] === null;
     }
-    return $r;
+    return crm_entities_strip_mortgage($entity, $r);
 }
 
 /* ---- List & get ---------------------------------------------------------------------------- */
@@ -798,6 +828,10 @@ function crm_action_list()
         foreach ($rows as $i => $r) {
             $rows[$i] = crm_decorate('templates', $r);
         }
+    } elseif ($entity === 'leads' || $entity === 'policies') {
+        foreach ($rows as $i => $r) {
+            $rows[$i] = crm_entities_strip_mortgage($entity, $r);
+        }
     }
     crm_ok(['rows' => $rows]);
 }
@@ -864,7 +898,8 @@ function crm_action_get()
             $out['activities'] = crm_activities_where('client_id', $id);
             $out['tasks'] = crm_tasks_where('client_id', $id);
             $out['documents'] = crm_all('SELECT * FROM documents WHERE client_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY case_id, name', [$id, $officeId]);
-            $out['opportunities'] = crm_all("SELECT * FROM opportunities WHERE client_id = ? AND office_id = ? ORDER BY status = 'open' DESC, created_at DESC", [$id, $officeId]);
+            $out['opportunities'] = crm_all("SELECT * FROM opportunities WHERE client_id = ? AND office_id = ?" . crm_views_opportunity_case_and('opportunities')
+                . " ORDER BY status = 'open' DESC, created_at DESC", [$id, $officeId]);
             if (crm_protection_only()) {
                 $out['cases'] = [];
                 $out['documents'] = [];
@@ -927,6 +962,7 @@ function crm_action_delete()
     $u = crm_user();
     crm_tx(function () use ($entity, $id, $u) {
         $r = crm_must_find($entity, $id);
+        crm_entities_guard_other_work($entity, $id, false);
         if ($entity === 'templates' && $r['office_id'] === null && !in_array($u['role'], ['admin', 'manager'], true)) {
             crm_fail(403, 'forbidden', 'Shared templates can only be deleted by an office manager.');
         }
@@ -994,6 +1030,7 @@ function crm_action_purge()
         if (!$r['deleted_at']) {
             crm_fail(409, 'not_in_trash', 'Move it to the trash first.');
         }
+        crm_entities_guard_other_work($entity, $id, true);
         $name = crm_record_name($entity, $r);
         crm_purge_rows($entity, $id);
         crm_entity_audit('purge', $entity, $id, 'Permanently deleted ' . strtolower(crm_entity($entity)['label']) . ' ' . $name, $r);

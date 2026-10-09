@@ -2749,7 +2749,8 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				alert('No subscribers to export.');
 				return;
 			}
-			const csv = 'Email\n' + items.join('\n');
+			// A value starting = + - or @ would run as a formula in Excel, so it gets a leading apostrophe.
+			const csv = 'Email\n' + items.map((v) => (/^[=+\-@]/.test(v) ? "'" + v : v)).join('\n');
 			const blob = new Blob([csv], { type: 'text/csv' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');

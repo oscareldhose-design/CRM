@@ -203,7 +203,8 @@ test('protection-only advisers cannot link tasks or policies to mortgage cases o
   const pol = await newcastle.save('policies', { client_id: cl.id, policy_type: 'life', case_id: k.id });
   const edit = await hannah.post('save', { entity: 'policies', id: pol.id, data: { premium: 25, case_id: k.id } });
   assert.equal(edit.status, 200, edit.text);
-  assert.equal(edit.json.record.case_id, k.id);
+  assert.ok(!('case_id' in edit.json.record), 'she is not told which mortgage case it belongs to');
+  assert.equal((await newcastle.get('get', { entity: 'policies', id: pol.id })).json.record.case_id, k.id, 'the link to the case is kept');
 });
 
 test('staff fields only take active staff of the same office, but an unchanged person is kept', async () => {

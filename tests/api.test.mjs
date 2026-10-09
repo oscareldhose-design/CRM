@@ -479,6 +479,18 @@ test('protection-only advisers see nothing to do with mortgages', async () => {
   assert.ok(!file.activities.some((a) => a.case_id) && !file.tasks.some((t) => t.case_id));
   assert.equal((await pat.post('addActivity', { client_id: cl.id, case_id: k.id, type: 'note', summary: 'x' })).status, 404);
   assert.ok((await london.get('list', { entity: 'tasks' })).json.rows.some((t) => t.case_id === k.id), 'the office login still has them');
+  // A lead that isn't a mortgage enquiry can still carry figures: protection-only advisers never receive them.
+  const other = await london.save('leads', { first_name: 'Ola', last_name: 'Figures', phone: '07700 900324', enquiry_type: 'other', loan_amount: 150000, property_value: 200000 });
+  const seen = (await pat.get('list', { entity: 'leads', status: 'all' })).json.rows.find((l) => l.id === other.id);
+  assert.ok(seen && !('loan_amount' in seen) && !('property_value' in seen), 'no mortgage figures in the lead list');
+  const got = (await pat.get('get', { entity: 'leads', id: other.id })).json.record;
+  assert.ok(!('loan_amount' in got) && !('deposit' in got), 'or on the lead');
+  assert.equal((await london.get('get', { entity: 'leads', id: other.id })).json.record.loan_amount, 150000);
+  // A client who also has a mortgage case can't be trashed from a protection-only login.
+  const del = await pat.post('delete', { entity: 'clients', id: cl.id });
+  assert.equal(del.status, 409);
+  assert.equal(del.json.code, 'has_other_work');
+  assert.equal((await london.get('get', { entity: 'cases', id: k.id })).status, 200, 'the case is untouched');
   // The London office login still sees everything.
   assert.equal((await london.get('get', { entity: 'cases', id: k.id })).status, 200);
   assert.equal((await london.get('dashboard')).json.mode, undefined);

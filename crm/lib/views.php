@@ -104,7 +104,7 @@ function crm_dashboard_protection()
     $r = [];
     $n = (int) crm_val("SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'new' AND rating = 'HOT'" . crm_protection_and('leads', 'leads'), [$o]);
     if ($n) {
-        $r[] = ['level' => 'high', 'text' => $n . ' HOT lead' . ($n > 1 ? 's are' : ' is') . ' waiting for first contact', 'link' => '#/leads?rating=HOT'];
+        $r[] = ['level' => 'high', 'text' => $n . ' HOT lead' . ($n > 1 ? 's are' : ' is') . ' waiting for first contact', 'link' => '#/leads?rating=HOT&status=new'];
     }
     if ($kpis['tasks_overdue']) {
         $r[] = ['level' => 'high', 'text' => $kpis['tasks_overdue'] . ' overdue task' . ($kpis['tasks_overdue'] > 1 ? 's' : ''), 'link' => '#/tasks?due=overdue'];
@@ -182,7 +182,7 @@ function crm_action_dashboard()
     $r = [];
     $n = (int) crm_val("SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'new' AND rating = 'HOT'", [$o]);
     if ($n) {
-        $r[] = ['level' => 'high', 'text' => $n . ' HOT lead' . ($n > 1 ? 's are' : ' is') . ' waiting for first contact', 'link' => '#/leads?rating=HOT'];
+        $r[] = ['level' => 'high', 'text' => $n . ' HOT lead' . ($n > 1 ? 's are' : ' is') . ' waiting for first contact', 'link' => '#/leads?rating=HOT&status=new'];
     }
     $n = (int) crm_val("SELECT COUNT(*) FROM leads WHERE office_id = ? AND deleted_at IS NULL AND status = 'new' AND created_at < ?", [$o, crm_iso_days_ago(2)]);
     if ($n) {
@@ -906,6 +906,11 @@ function crm_action_backup()
     foreach ($tables as $t) {
         $only = $t === 'opportunities' ? ($prot ? " AND type <> 'remortgage'" : '') : crm_protection_and($t, $t);
         $out[$t] = $all ? crm_all("SELECT * FROM $t WHERE 1 = 1" . $only) : crm_all("SELECT * FROM $t WHERE office_id = ?" . $only, [$o]);
+        if ($prot) {
+            $out[$t] = array_map(function ($r) use ($t) {
+                return crm_entities_strip_mortgage($t, $r);
+            }, $out[$t]);
+        }
     }
     foreach ($out['opportunities'] as $i => $op) {
         $out['opportunities'][$i]['detail'] = crm_views_opportunity_detail($op);
@@ -914,7 +919,7 @@ function crm_action_backup()
         : crm_all('SELECT * FROM templates WHERE (office_id = ? OR office_id IS NULL)' . crm_templates_protection_and('templates'), [$o]);
     $out['audit_log'] = $all ? crm_all('SELECT * FROM audit_log a WHERE 1 = 1' . crm_views_audit_protection_and('a') . ' ORDER BY id')
         : crm_all('SELECT * FROM audit_log a WHERE office_id = ?' . crm_views_audit_protection_and('a') . ' ORDER BY id', [$o]);
-    if ($all) {
+    if ($all && !$prot) {
         $out['events'] = crm_all('SELECT * FROM events');
         $out['event_contacts'] = crm_all('SELECT * FROM event_contacts');
         $out['sales_calls'] = crm_all('SELECT * FROM sales_calls');

@@ -469,10 +469,12 @@ function crm_action_sales_queue()
     $u = crm_user();
     $me = (int) $u['id'];
     $eventId = crm_in_int('event_id');
-    $skip = crm_in_int('skip');
+    // skip: the people this agent has skipped ("12,7,3", latest first). Each one is let go and left out of this answer.
+    $skips = array_slice(array_values(array_unique(array_filter(array_map('intval', explode(',', crm_in_str('skip', 2000)))))), 0, 100);
+    $in = implode(',', array_fill(0, count($skips), '?'));
     $cutoff = gmdate('Y-m-d\TH:i:s\Z', time() - CRM_QUEUE_CLAIM_MINUTES * 60);
-    if ($skip) {
-        crm_q('UPDATE event_contacts SET claimed_by = NULL, claimed_at = NULL WHERE id = ? AND claimed_by = ?', [$skip, $me]);
+    if ($skips) {
+        crm_q("UPDATE event_contacts SET claimed_by = NULL, claimed_at = NULL WHERE id IN ($in) AND claimed_by = ?", array_merge($skips, [$me]));
     }
     $contact = null;
     for ($try = 0; $try < 5 && !$contact; $try++) {
@@ -484,9 +486,9 @@ function crm_action_sales_queue()
             $sql .= ' AND ec.event_id = ?';
             $p[] = $eventId;
         }
-        if ($skip) {
-            $sql .= ' AND ec.id <> ?';
-            $p[] = $skip;
+        if ($skips) {
+            $sql .= " AND ec.id NOT IN ($in)";
+            $p = array_merge($p, $skips);
         }
         $sql .= " ORDER BY CASE WHEN ec.claimed_by = ? AND ec.claimed_at >= ? THEN 0 WHEN ec.status = 'callback' THEN 1 WHEN ec.status = 'new' THEN 2 ELSE 3 END,
             CASE WHEN ec.status = 'callback' THEN ec.callback_at ELSE '' END, e.event_date DESC, ec.attempts, ec.id LIMIT 1";

@@ -339,6 +339,9 @@ function crm_norm_phone($s)
     $d = preg_replace('/^00/', '', $d);
     if (preg_match('/^440?(\d{9,10})$/', $d, $m)) {
         $d = '0' . $m[1];
+    } elseif (preg_match('/^[1-9]\d{9}$/', $d)) {
+        // A UK number that lost its leading 0 (e.g. in a spreadsheet).
+        $d = '0' . $d;
     }
     return $d;
 }
@@ -1143,7 +1146,7 @@ function crm_seed(PDO $pdo)
         ['Remortgage review', 'Remortgage', 'Your fixed rate ends soon: let\'s review your options',
             "Hi {{first_name}},\n\nYour current fixed rate with {{lender}} ends on {{fixed_rate_end_date}}. Now is the right time to review your options so you don't move onto a higher variable rate.\n\nCould we book a quick call this week?\n\nKind regards,\n{{my_name}}\nMAP | Your way home"],
         ['Protection review', 'Protection', 'Protecting your home and family',
-            "Hi {{first_name}},\n\nNow that your mortgage is in place, it's worth making sure your family and home are protected if the unexpected happens: life cover, critical illness and income protection.\n\nI'd be happy to run through some options with no obligation. When suits you for a call?\n\nKind regards,\n{{my_name}}\nMAP | Your way home"],
+            "Hi {{first_name}},\n\nIt's worth making sure your family and home are protected if the unexpected happens: life cover, critical illness and income protection.\n\nI'd be happy to run through some options with no obligation. When suits you for a call?\n\nKind regards,\n{{my_name}}\nMAP | Your way home"],
         ['Insurance renewal', 'Insurance', 'Your policy renewal is coming up',
             "Hi {{first_name}},\n\nYour insurance policy is due for renewal soon. Before it renews automatically, we can check you're still getting the right cover at the best price.\n\nKind regards,\n{{my_name}}\nMAP | Your way home"],
     ];
