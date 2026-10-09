@@ -28,7 +28,12 @@ RedirectMatch 404 /(lib|data)(/|$)
     </FilesMatch>
 </IfModule>
 
-# Send visitors to https:// (uncomment once your SSL certificate is working).
-# RewriteEngine On
-# RewriteCond %{HTTPS} !=on
-# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+# Always use https://, so passwords and the sign-in cookie are never sent unencrypted.
+# (themaap.co.uk already has a working certificate. If the CRM ever moves to a site without one, put a # in front of
+# the four lines starting RewriteEngine ... RewriteRule.)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>

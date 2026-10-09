@@ -14,13 +14,22 @@ same set-up as the Lucky Draw. There is no build step and no separate database s
 
 ## Put it on your website
 
-1. **Check the server.** It needs PHP 7.4 or newer with SQLite (`pdo_sqlite`). Almost every web host has
-   this switched on. If it isn't, the sign-in page says so. Use **https://** so passwords are encrypted.
-2. **Upload the `crm` folder** to the website, next to the Lucky Draw's folder, so it's at
-   `https://themaap.co.uk/crm/`. Upload everything in it, including `.htaccess` and the `lib`, `js` and
-   `assets` folders.
-3. **Open `https://themaap.co.uk/crm/`.** The first visit creates the database in `crm/data` (web access to
-   it is blocked) along with these logins:
+The website (themaap.co.uk) is hosted with **Hostinger**; the Lucky Draw is in its `draw` folder. The CRM goes next
+to it, in a `crm` folder, so it is at `https://themaap.co.uk/crm/`. It needs PHP 7.4 or newer with SQLite, which
+Hostinger has switched on.
+
+1. **Get the files.** Use the `crm-upload.zip` you were given (or build it from this repository with
+   `git archive --format=zip --prefix=crm/ -o crm-upload.zip HEAD:crm`). Never upload a `crm/data` folder copied
+   from another computer: it would bring that computer's test logins and clients with it.
+2. **Upload with Hostinger's File Manager.** hPanel → **Websites** → themaap.co.uk → **File manager**. Open
+   `public_html` (the folder that already contains `draw`). Upload `crm-upload.zip`, right-click it → **Extract**
+   into `public_html`. You now have `public_html/crm/` with `index.html`, `api.php`, `.htaccess` and the `js`,
+   `lib` and `assets` folders. Delete the zip.
+   *(With FTP instead, e.g. FileZilla: upload the whole `crm` folder into `public_html`, and turn on "show hidden
+   files" so the two `.htaccess` files go up too: one in `crm`, one in `crm/lib`.)*
+3. **Open `https://themaap.co.uk/crm/`.** The sign-in page appears and the first visit creates the database in
+   `crm/data` (nobody can download it). `http://` addresses are sent to `https://` automatically. These logins
+   are ready:
 
    | Username     | Password    | Opens                                                                  |
    |--------------|-------------|------------------------------------------------------------------------|
@@ -31,18 +40,45 @@ same set-up as the Lucky Draw. There is no build step and no separate database s
 
    The three office logins are equal: each is one login for a whole office (not a person) and sees every
    client, case and task in that office. Each adviser has their own login on top of that.
-4. **Sign in as `admin` first.** A recovery code is shown once. Write it down and keep it safe.
+4. **Sign in as `admin` first.** A recovery code is shown once. Write it down and keep it somewhere safe.
    If the admin password is ever forgotten, "Forgot password?" on the sign-in page uses this code to reset it.
-5. **Change the four passwords** (My account → Change password, or Password in the website admin
-   panel). ⚠️ This repository is public, so anyone can read the starting password here and in `crm/config.php`.
-   Change them straight away, or make the repository private.
-6. **Delete the old `admin.html`** from the website root. It is currently open to anyone at
-   `themaap.co.uk/admin.html`. The new panel is at `https://themaap.co.uk/crm/website-admin.php`. Going there
-   while signed out takes you to the sign-in page first, and signing in as `admin` opens it.
+5. **Change the four passwords** (the **Password** button in the admin panel; **My account → Change password**
+   in the CRM). ⚠️ This repository is public, so anyone can read the starting password here and in
+   `crm/config.php`. Change them straight away, or make the repository private.
+6. **Make the request emails arrive** (see below), then click **Send a test email** in the admin panel under
+   **CRM logins → Offices & settings**.
+7. **Delete the old `admin.html`** from `public_html`. It is open to anyone at `themaap.co.uk/admin.html`. The
+   new panel is at `https://themaap.co.uk/crm/website-admin.php`: going there while signed out shows the
+   sign-in page first, and signing in as `admin` opens it.
+8. *(Optional)* **Run the reminders overnight too.** hPanel → **Advanced → Cron Jobs**: add a daily job that runs
+   `php` with the file `public_html/crm/api.php` and the word `cron` after it (hPanel shows the full path, e.g.
+   `/usr/bin/php /home/u…/domains/themaap.co.uk/public_html/crm/api.php cron`). Without it, the reminders still
+   run whenever someone uses the CRM.
+
+**Updating later:** upload the new files over the old ones (extract the new zip into `public_html` and let it
+replace files). Never delete or replace `crm/data`: it holds all the CRM's data.
 
 If the CRM is not at `https://themaap.co.uk/crm/`, change `CRM_PUBLIC_URL` in `crm/config.php` (it's the link in
 the login-request emails). If the website's `images` folder is not at the site root, adjust `CRM_WEBSITE_BASE`.
 The admin panel loads advisor photos from there.
+
+### Make the request emails arrive
+
+Every access request emails **info@themaap.co.uk**. The email is sent by the website's server (Hostinger) from
+`no-reply@themaap.co.uk`. But themaap.co.uk's email is Microsoft 365, set up through GoDaddy, and the domain's
+**SPF record** (the list of servers allowed to send its email) doesn't include Hostinger yet. Until it does,
+Microsoft 365 treats these emails as fake and puts them in Junk or quarantine.
+
+1. Sign in to **GoDaddy** → **My Products** → themaap.co.uk → **DNS**.
+2. Find the **TXT** record whose value starts `v=spf1` (there must only ever be one). Edit it so it reads:
+   `v=spf1 include:secureserver.net include:_spf.mail.hostinger.com -all`
+   and save. Don't add a second `v=spf1` record.
+3. Wait an hour, then click **Send a test email** in the admin panel (CRM logins → Offices & settings). If it lands
+   in Junk, mark it **Not junk**. If it doesn't arrive at all, check the quarantine at
+   `security.microsoft.com/quarantine`.
+
+Requests always appear in the admin panel under **CRM logins** (with a badge and a banner), even if an email
+goes astray. If Hostinger ever asks you to, set `CRM_MAIL_SET_SENDER` to `false` in `crm/config.php`.
 
 ## Logins for every adviser
 
@@ -72,10 +108,8 @@ remortgage radar, compliance, documents, Quick Case Lookup, mortgage leads and m
 removed. The server refuses them too, not just the screens. Their dashboard, reports and menus are about
 cover, quotes, renewals and commission. You can change someone's advice type at any time in **CRM logins**.
 
-**The email needs your web host to send mail.** It uses PHP's `mail()`, which most hosts have switched on, and
-is sent from `no-reply@themaap.co.uk`. If no emails arrive, ask your host to enable PHP mail for that address
-(or change `CRM_MAIL_FROM` and `CRM_NOTIFY_EMAIL` in `crm/config.php`). Requests always appear in the admin panel
-either way.
+**The request emails** are sent by the website's server; see **Make the request emails arrive** above for the
+one DNS change they need. The addresses are `CRM_NOTIFY_EMAIL` and `CRM_MAIL_FROM` in `crm/config.php`.
 
 **Security:** passwords are stored as bcrypt hashes. Five wrong passwords lock a login for 15 minutes,
 and repeated failures from one connection are blocked. Sessions are secure, http-only cookies. Every
@@ -135,18 +169,18 @@ crm/
   website-admin.php     the website admin panel and CRM logins (only after signing in as admin)
   lib/                  server code (web access blocked)
   assets/               MAP logo
-  data/                 created on first run: the database (never upload or commit this)
-tests/api.test.mjs      end-to-end tests
+  data/                 created on first run: the database (never upload, replace or commit this)
+tests/*.test.mjs        end-to-end and regression tests
 ```
 
 ## Run it on a computer (for testing)
 
 ```
-cd crm
-php -S 127.0.0.1:8080
+php -S 127.0.0.1:8080 -t crm
 ```
 
-Then open http://127.0.0.1:8080/. To run the tests (Node 20 or newer and PHP on the PATH):
-`node --test tests/api.test.mjs`.
+Run this from the repository folder, then open http://127.0.0.1:8080/. To run all the tests (Node 20 or newer, and
+PHP with SQLite on the PATH), run `npm test` from the repository folder. `MAP_CRM_STRINGIFY_FETCHES=1 npm test`
+runs them the way PHP 7.4 and 8.0 return database numbers.
 
 Advice and suitability always stay with the adviser. The system suggests and summarises.
