@@ -122,7 +122,8 @@ function signinPanel(opts) {
 function wireSignin(root, opts) {
   const form = $('#signinForm', root);
   if (opts.message) authAlert(root, opts.message, opts.messageKind || 'info');
-  setTimeout(() => (opts.username ? $('#si-pass', root) : $('#si-user', root)).focus(), 50);
+  // Not when someone (or their password manager) is already in a box: their typing would land in the other one.
+  setTimeout(() => { if (!root.contains(document.activeElement)) (opts.username ? $('#si-pass', root) : $('#si-user', root)).focus(); }, 50);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     authAlert(root, '');

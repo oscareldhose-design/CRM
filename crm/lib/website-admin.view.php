@@ -158,7 +158,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		}
 		.menu-toggle { display: none; width: 42px; height: 42px; border-radius: 50%; border: 1.5px solid var(--border); background: var(--surface); color: var(--text2); font-size: 18px; cursor: pointer; flex: none; }
 		.topbar-title { font-weight: 700; font-size: 17px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-		.topbar-conn { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+		.topbar-conn { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 		.conn-pill {
 			display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 700;
 			border: 1px solid var(--border2); background: var(--surface2); color: var(--text2); white-space: nowrap;
@@ -191,7 +191,10 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		.card-body > .tabs-bar { margin-bottom: 4px; }
 
 		/* ---------- Section cards ---------- */
-		.section-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow); min-width: 0; scroll-margin-top: 100px; animation: fadeIn .25s ease; }
+		.section-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--shadow); min-width: 0; scroll-margin-top: var(--topbar-space, 100px); animation: fadeIn .25s ease; }
+		/* Sections, forms opened with Edit and the newsletter preview scroll to just below the sticky top bar
+		   (--topbar-space is its measured height, set by the script at the end of the page). */
+		.adm-form-header, .form-grid, #newsletterPreviewPanel { scroll-margin-top: var(--topbar-space, 100px); }
 		.section-card.is-hidden { display: none; }
 		.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 18px 22px; border-bottom: 1px solid var(--border); }
 		.card-head-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
@@ -305,6 +308,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		/* ---------- Small screens ---------- */
 		@media (max-width: 1080px) {
 			.field.third { grid-column: span 3; }
+			.who-name { display: none; }
 		}
 		@media (max-width: 920px) {
 			.admin-sidebar { transform: translateX(-100%); }
@@ -313,8 +317,14 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			.menu-toggle { display: inline-grid; place-items: center; }
 		}
 		@media (max-width: 680px) {
-			.admin-topbar { margin: 8px 10px 0; top: 8px; border-radius: 20px; flex-wrap: wrap; }
-			.who-name { display: none; }
+			/* One slim row on phones, so the sticky bar doesn't cover the page: the title gives way and Password shows only its key. */
+			.admin-topbar { margin: 8px 10px 0; top: 8px; border-radius: 20px; flex-wrap: wrap; min-height: 0; padding: 8px 10px; gap: 8px; }
+			.topbar-title { flex: 1 1 0; min-width: 0; font-size: 15px; }
+			.topbar-conn { gap: 6px; }
+			.who-chip, .topbar-btn-label { display: none; }
+			.conn-pill { padding: 6px 10px; gap: 6px; font-size: 12px; }
+			#mapChangePwBtn { padding: 0 11px !important; }
+			#mapSignOutBtn { padding: 0 12px !important; }
 			.admin-content { padding: 16px 16px 60px; }
 			.field.half, .field.third { grid-column: span 6; }
 			.card-head, .card-body { padding-left: 16px; padding-right: 16px; }
@@ -323,6 +333,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			.tabs-bar { border-radius: 18px; }
 			.page-intro h1 { font-size: 24px; }
 		}
+		@media (max-width: 480px) { .topbar-title { display: none; } }
 		@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } html { scroll-behavior: auto; } }
 
 		/* Password dialog */
@@ -442,7 +453,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			<div class="topbar-conn">
 				<span class="conn-pill" id="firebaseConnectionBadge">Disconnected</span>
 				<span class="who-chip"><span class="who-avatar" aria-hidden="true">{{USER_INITIALS}}</span><span class="who-name">{{USER_NAME}}</span></span>
-				<button class="btn ghost" id="mapChangePwBtn" type="button" style="min-height:36px;padding:0 14px;font-size:13px">🔑 Password</button>
+				<button class="btn ghost" id="mapChangePwBtn" type="button" style="min-height:36px;padding:0 14px;font-size:13px" title="Change password" aria-label="Change password"><span>🔑<span class="topbar-btn-label"> Password</span></span></button>
 				<button class="btn primary" id="mapSignOutBtn" type="button" style="min-height:36px;padding:0 16px;font-size:13px">Sign out</button>
 			</div>
 		</header>
@@ -1122,7 +1133,10 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		const STORAGE_KEY = 'map_firebase_config';
 		const EMAILJS_STORAGE_KEY = 'map_emailjs_config';
 		const THEME_STORAGE_KEY = 'map_admin_theme';
-		const TAB_STORAGE_KEY = 'map_admin_tab';
+		// The original admin.html (if it is still on the website) keeps its tab in 'map_admin_tab' and doesn't know the
+		// new 'logins' and 'connection' tabs, so this panel keeps its own key and never leaves those values in the old one.
+		const TAB_STORAGE_KEY = 'map_admin_tab_crm';
+		const ORIGINAL_TAB_STORAGE_KEY = 'map_admin_tab';
 		const FUNCTION_REGION = 'us-central1';
 		const NEWSLETTER_FUNCTION_NAME = 'sendNewsletter';
 		const DEFAULT_FIREBASE_CONFIG = {
@@ -1441,9 +1455,9 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 
 			refs.reviewPreview.innerHTML = `
 				<div class="stars">${stars}</div>
-				<div class="title">${title}</div>
-				<div>${text}</div>
-				<div class="meta">${author}</div>
+				<div class="title">${mapEscape(title)}</div>
+				<div>${mapEscape(text)}</div>
+				<div class="meta">${mapEscape(author)}</div>
 			`;
 		}
 
@@ -1473,7 +1487,8 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			return mapEscape(methods.join(', '));
 		}
 
-		// MAP security fix: text typed by website visitors (contact form, newsletter sign-up) is shown as text, never run as HTML.
+		// MAP security fix: everything read from Firestore is shown as text, never run as HTML. The panel writes to Firestore
+		// without a Firebase sign-in, so anyone with the website's public config can write to these collections too.
 		function mapEscape(value) {
 			return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 		}
@@ -1610,11 +1625,11 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					card.dataset.namekey = nameKey;
 					card.innerHTML = `
 						${fbEntry ? '<div class="adm-fb-dot" title="Saved in Firebase"></div>' : ''}
-						<img class="adm-person-avatar" src="${imgSrc}" alt="${advisor.name}"
+						<img class="adm-person-avatar" src="${mapEscape(imgSrc)}" alt="${mapEscape(advisor.name)}"
 							onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-						<div class="adm-person-init" style="display:none;">${advisor.name.charAt(0)}</div>
-						<div class="adm-person-name">${advisor.name}</div>
-						<div class="adm-person-sub">${advisor.location}</div>
+						<div class="adm-person-init" style="display:none;">${mapEscape(advisor.name.charAt(0))}</div>
+						<div class="adm-person-name">${mapEscape(advisor.name)}</div>
+						<div class="adm-person-sub">${mapEscape(advisor.location)}</div>
 					`;
 					card.addEventListener('click', () => selectAdvisorCard(advisor, fbEntry, card));
 					gridEl.appendChild(card);
@@ -1631,11 +1646,11 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					card.innerHTML = `
 						<div class="adm-fb-dot" title="Firebase-managed"></div>
 						${item.imageBase64
-							? `<img class="adm-person-avatar" src="${item.imageBase64}" alt="${item.name}">`
-							: `<div class="adm-person-init">${(item.name || '?').charAt(0)}</div>`
+							? `<img class="adm-person-avatar" src="${mapEscape(item.imageBase64)}" alt="${mapEscape(item.name)}">`
+							: `<div class="adm-person-init">${mapEscape((item.name || '?').charAt(0))}</div>`
 						}
-						<div class="adm-person-name">${item.name || 'Unnamed'}</div>
-						<div class="adm-person-sub">${item.location || ''}</div>
+						<div class="adm-person-name">${mapEscape(item.name || 'Unnamed')}</div>
+						<div class="adm-person-sub">${mapEscape(item.location || '')}</div>
 					`;
 					const hc = { name: item.name || '', location: item.location || '', specialty: item.specialty || '', img: null };
 					card.addEventListener('click', () => selectAdvisorCard(hc, { id: d.id, data: item }, card));
@@ -1676,12 +1691,12 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					card.dataset.namekey = nameKey;
 					card.innerHTML = `
 						${fbEntry ? '<div class="adm-fb-dot" title="Saved in Firebase"></div>' : ''}
-						<img class="adm-person-avatar" src="${imgSrc}" alt="${member.name}"
+						<img class="adm-person-avatar" src="${mapEscape(imgSrc)}" alt="${mapEscape(member.name)}"
 							onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-						<div class="adm-person-init" style="display:none;">${member.name.charAt(0)}</div>
-						<div class="adm-person-name">${member.name}</div>
-						<div class="adm-person-sub">${member.role}</div>
-						<div class="adm-person-dept" title="${member.department}">${member.department}</div>
+						<div class="adm-person-init" style="display:none;">${mapEscape(member.name.charAt(0))}</div>
+						<div class="adm-person-name">${mapEscape(member.name)}</div>
+						<div class="adm-person-sub">${mapEscape(member.role)}</div>
+						<div class="adm-person-dept" title="${mapEscape(member.department)}">${mapEscape(member.department)}</div>
 					`;
 					card.addEventListener('click', () => selectTeamCard(member, fbEntry, card));
 					gridEl.appendChild(card);
@@ -1698,12 +1713,12 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					card.innerHTML = `
 						<div class="adm-fb-dot" title="Firebase-managed"></div>
 						${item.imageBase64
-							? `<img class="adm-person-avatar" src="${item.imageBase64}" alt="${item.name}">`
-							: `<div class="adm-person-init">${(item.name || '?').charAt(0)}</div>`
+							? `<img class="adm-person-avatar" src="${mapEscape(item.imageBase64)}" alt="${mapEscape(item.name)}">`
+							: `<div class="adm-person-init">${mapEscape((item.name || '?').charAt(0))}</div>`
 						}
-						<div class="adm-person-name">${item.name || 'Unnamed'}</div>
-						<div class="adm-person-sub">${item.role || ''}</div>
-						${item.department ? `<div class="adm-person-dept" title="${item.department}">${item.department}</div>` : ''}
+						<div class="adm-person-name">${mapEscape(item.name || 'Unnamed')}</div>
+						<div class="adm-person-sub">${mapEscape(item.role || '')}</div>
+						${item.department ? `<div class="adm-person-dept" title="${mapEscape(item.department)}">${mapEscape(item.department)}</div>` : ''}
 					`;
 					const hc = { name: item.name || '', role: item.role || '', title: item.title || '', department: item.department || '', img: null };
 					card.addEventListener('click', () => selectTeamCard(hc, { id: d.id, data: item }, card));
@@ -2088,14 +2103,14 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				el.className = 'item';
 				el.innerHTML = `
 					<div class="item-head">
-						<h4>${item.icon || '🔎'} ${item.title || 'Untitled'}</h4>
-						<span class="chip">${item.cat || 'resources'}</span>
+						<h4>${mapEscape(item.icon || '🔎')} ${mapEscape(item.title || 'Untitled')}</h4>
+						<span class="chip">${mapEscape(item.cat || 'resources')}</span>
 					</div>
-					<small>${item.link || ''}</small>
-					<small>Keywords: ${item.keywords || '-'}</small>
+					<small>${mapEscape(item.link || '')}</small>
+					<small>Keywords: ${mapEscape(item.keywords || '-')}</small>
 					<div class="row-actions">
-						<button class="btn ghost" data-action="edit" data-id="${d.id}">Edit</button>
-						<button class="btn danger" data-action="delete" data-id="${d.id}">Delete</button>
+						<button class="btn ghost" data-action="edit" data-id="${mapEscape(d.id)}">Edit</button>
+						<button class="btn danger" data-action="delete" data-id="${mapEscape(d.id)}">Delete</button>
 					</div>
 				`;
 				refs.searchList.appendChild(el);
@@ -2107,7 +2122,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					refs.searchCat.value = item.cat || 'resources';
 					refs.searchIcon.value = item.icon || '🔎';
 					refs.searchKeywords.value = item.keywords || '';
-					window.scrollTo({ top: refs.searchForm.offsetTop - 40, behavior: 'smooth' });
+					refs.searchForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
 				});
 
 				el.querySelector('[data-action="delete"]').addEventListener('click', async () => {
@@ -2180,15 +2195,15 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				el.className = 'item';
 				el.innerHTML = `
 					<div class="item-head">
-						<h4>${item.name || 'Anonymous'} - ${stars}</h4>
+						<h4>${mapEscape(item.name || 'Anonymous')} - ${stars}</h4>
 						<span class="chip">${item.approved ? 'approved' : 'draft'}</span>
 					</div>
-					<small>${item.source || 'Website'} | ${item.tag || 'General'}</small>
-					<small>${item.link || 'No Google link provided'}</small>
-					<div>${item.text || ''}</div>
+					<small>${mapEscape(item.source || 'Website')} | ${mapEscape(item.tag || 'General')}</small>
+					<small>${mapEscape(item.link || 'No Google link provided')}</small>
+					<div>${mapEscape(item.text || '')}</div>
 					<div class="row-actions">
-						<button class="btn ghost" data-action="edit" data-id="${d.id}">Edit</button>
-						<button class="btn danger" data-action="delete" data-id="${d.id}">Delete</button>
+						<button class="btn ghost" data-action="edit" data-id="${mapEscape(d.id)}">Edit</button>
+						<button class="btn danger" data-action="delete" data-id="${mapEscape(d.id)}">Delete</button>
 					</div>
 				`;
 				refs.reviewList.appendChild(el);
@@ -2203,7 +2218,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					refs.reviewApproved.value = String(Boolean(item.approved));
 					refs.reviewDate.value = item.createdAt ? toDateTimeLocalValue(item.createdAt).slice(0, 10) : '';
 					refs.reviewText.value = item.text || '';
-					window.scrollTo({ top: refs.reviewForm.offsetTop - 40, behavior: 'smooth' });
+					refs.reviewForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
 				});
 
 				el.querySelector('[data-action="delete"]').addEventListener('click', async () => {
@@ -2296,11 +2311,11 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					el.className = 'item';
 					el.innerHTML = `
 						<div class="item-head">
-							<h4>${item.text || 'Untitled announcement'}</h4>
+							<h4>${mapEscape(item.text || 'Untitled announcement')}</h4>
 							<span class="chip">${state}</span>
 						</div>
-						<small>Type: ${item.type || 'info'} | Enabled: ${String(Boolean(item.enabled))}</small>
-						<small>From: ${formatSchedule(item.startAt)} | To: ${formatSchedule(item.endAt)}</small>
+						<small>Type: ${mapEscape(item.type || 'info')} | Enabled: ${String(Boolean(item.enabled))}</small>
+						<small>From: ${mapEscape(formatSchedule(item.startAt))} | To: ${mapEscape(formatSchedule(item.endAt))}</small>
 						<div class="row-actions">
 							<button class="btn ghost" data-action="edit">Edit</button>
 							<button class="btn warn" data-action="toggle">${item.enabled ? 'Disable' : 'Enable'}</button>
@@ -2316,7 +2331,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 						refs.announcementEnabled.value = String(Boolean(item.enabled));
 						refs.announcementStartAt.value = toDateTimeLocalValue(item.startAt);
 						refs.announcementEndAt.value = toDateTimeLocalValue(item.endAt);
-						window.scrollTo({ top: refs.announcementForm.offsetTop - 40, behavior: 'smooth' });
+						refs.announcementForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
 					});
 
 					el.querySelector('[data-action="toggle"]').addEventListener('click', async () => {
@@ -2376,7 +2391,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					el.innerHTML = `
 						<div class="item-head">
 							<h4>${mapEscape(item.name || 'Unknown')} | ${mapEscape(item.email || 'No email')}</h4>
-							<span class="chip">${formatSchedule(item.createdAt)}</span>
+							<span class="chip">${mapEscape(formatSchedule(item.createdAt))}</span>
 						</div>
 						<small>Phone: ${mapEscape(item.phone || 'Not provided')}</small>
 						<small>Preferred contact: ${formatContactMethods(item.contactMethods)}</small>
@@ -2426,16 +2441,16 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					el.className = 'item';
 					el.innerHTML = `
 						<div class="item-head" style="align-items:flex-start;gap:0.75rem;">
-							${item.imageBase64 ? `<img class="news-item-img" src="${item.imageBase64}" alt="" />` : ''}
+							${item.imageBase64 ? `<img class="news-item-img" src="${mapEscape(item.imageBase64)}" alt="" />` : ''}
 							<div style="flex:1;min-width:0;">
-								<h4>${item.title || 'Untitled'}</h4>
-								<small style="display:block;margin-top:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(item.description || '').slice(0, 80)}${(item.description || '').length > 80 ? '…' : ''}</small>
+								<h4>${mapEscape(item.title || 'Untitled')}</h4>
+								<small style="display:block;margin-top:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${mapEscape(String(item.description || '').slice(0, 80))}${(item.description || '').length > 80 ? '…' : ''}</small>
 							</div>
 							<span class="chip">${item.published ? 'published' : 'draft'}</span>
 						</div>
 						<div class="row-actions">
-							<button class="btn ghost" data-action="edit" data-id="${d.id}">Edit</button>
-							<button class="btn danger" data-action="delete" data-id="${d.id}">Delete</button>
+							<button class="btn ghost" data-action="edit" data-id="${mapEscape(d.id)}">Edit</button>
+							<button class="btn danger" data-action="delete" data-id="${mapEscape(d.id)}">Delete</button>
 						</div>
 					`;
 					refs.newsList.appendChild(el);
@@ -2452,7 +2467,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 						} else {
 							refs.newsImagePreview.style.display = 'none';
 						}
-						window.scrollTo({ top: refs.newsForm.offsetTop - 40, behavior: 'smooth' });
+						refs.newsForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
 					});
 
 					el.querySelector('[data-action="delete"]').addEventListener('click', async () => {
@@ -2618,10 +2633,10 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					el.innerHTML = `
 						<div class="item-head">
 							<h4 style="font-size:0.95rem;">📧 ${mapEscape(item.email || 'Unknown email')}</h4>
-							<span class="chip">${dateStr}</span>
+							<span class="chip">${mapEscape(dateStr)}</span>
 						</div>
 						<div class="row-actions">
-							<button class="btn danger" data-action="delete" data-id="${d.id}">Unsubscribe</button>
+							<button class="btn danger" data-action="delete" data-id="${mapEscape(d.id)}">Unsubscribe</button>
 						</div>
 					`;
 					refs.newsletterList.appendChild(el);
@@ -2986,6 +3001,9 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			wireEvents();
 
 			applyTheme(localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark');
+			try {
+				if (['logins', 'connection'].includes(localStorage.getItem(ORIGINAL_TAB_STORAGE_KEY))) localStorage.setItem(ORIGINAL_TAB_STORAGE_KEY, 'content');
+			} catch { /* private mode */ }
 			setActiveTab(localStorage.getItem(TAB_STORAGE_KEY) || 'content');
 			setActiveSidebarLink('firebase-section');
 			document.documentElement.dataset.panelReady = '1';
@@ -3037,6 +3055,18 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				else { msg((r && r.message) || 'Could not change the password.', 'error'); }
 			});
 		});
+		// Keep what the panel scrolls to (sections, Edit forms) below the sticky top bar, however many rows the bar needs.
+		var topbar = document.querySelector('.admin-topbar');
+		function topbarSpace() {
+			var cs = getComputedStyle(topbar);
+			var space = cs.position === 'sticky' || cs.position === 'fixed' ? topbar.offsetHeight + (parseFloat(cs.top) || 0) : 0;
+			document.documentElement.style.setProperty('--topbar-space', Math.ceil(space + 16) + 'px');
+		}
+		if (topbar) {
+			topbarSpace();
+			window.addEventListener('resize', topbarSpace);
+			if (window.ResizeObserver) new ResizeObserver(topbarSpace).observe(topbar);
+		}
 		// Highlight the sidebar link for the section that is showing, and close the menu on phones.
 		function syncSidebar() {
 			var links = document.querySelectorAll('.sidebar-link[data-target]');

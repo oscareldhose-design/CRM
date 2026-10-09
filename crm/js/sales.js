@@ -50,8 +50,10 @@ function editContact(eventId, c, onSaved) {
     },
   });
 }
-function handoverModal(contact, onDone) {
+/** onCancel: called when the dialog is closed without handing the person over. */
+function handoverModal(contact, onDone, onCancel) {
   const offices = S.meta.offices;
+  let handed = false;
   modal({
     title: `Hand ${fullName(contact)} over`, sub: 'They arrive in the office as a new lead with the full call history, and the adviser gets a "contact lead" task.',
     body: h`<div class="form-grid">
@@ -61,6 +63,7 @@ function handoverModal(contact, onDone) {
       <div class="field"><label for="ho-d">Administrator</label><select class="select" id="ho-d" name="administrator_id" disabled><option value="">Choose the office first</option></select><div class="field-error" hidden></div></div>
       <div class="field full"><label for="ho-n">Notes for the adviser</label><textarea class="textarea" id="ho-n" name="notes" placeholder="Best time to call, what they asked about…">${contact.interest ? `Interested in: ${contact.interest}` : ''}</textarea></div></div>`,
     foot: h`<button class="btn btn-ghost" type="button" data-close>Cancel</button><button class="btn btn-primary" type="button" data-ok>${icon('send')}Hand over</button>`,
+    onClose: () => { if (!handed && onCancel) onCancel(); },
     onMount(el, close) {
       const o = $('#ho-o', el), a = $('#ho-a', el), d = $('#ho-d', el);
       o.addEventListener('change', async () => {
@@ -79,6 +82,7 @@ function handoverModal(contact, onDone) {
         busy(btn, true, 'Handing over…');
         try {
           await apiPost('salesHandover', { contact_id: contact.id, office_id: +o.value, adviser_id: +a.value, administrator_id: +d.value || 0, enquiry_type: $('#ho-t', el).value, notes: $('#ho-n', el).value });
+          handed = true;
           close(); toast(`Handed over to ${o.options[o.selectedIndex].text}`); onDone();
         } catch (err) { busy(btn, false); showFormError(el, err); }
       });
@@ -144,6 +148,8 @@ async function viewSalesEvent({ el, params, query, stale }) {
   const draw = () => {
     setQuery({ status: state.status });
     const rows = d.contacts.filter((c) => !state.status || c.status === state.status);
+    // Someone handed to another office belongs to that office: only it (or General Sales) can change them.
+    const otherOffice = (c) => S.me.role !== 'sales' && c.handed_office_id && +c.handed_office_id !== +S.me.office_id;
     const opts = {
       rows, noun: 'contact', exportName: `MAP ${ev.name} contacts`,
       empty: emptyState('users', 'No contacts here', 'Import the event\'s sign-up list (Excel or CSV) or add people one at a time.'),
@@ -153,10 +159,10 @@ async function viewSalesEvent({ el, params, query, stale }) {
         { k: 'status', label: 'Status', value: (c) => label('contact_status', c.status), render: (c) => h`${statusBadge('contact_status', c.status)}${c.status === 'callback' && c.callback_at ? h`<div class="t-sub">${fmtDateTime(c.callback_at)}</div>` : ''}${c.handed_office ? h`<div class="t-sub">to ${c.handed_office}</div>` : ''}` },
         { k: 'attempts', label: 'Calls', right: true, value: (c) => +c.attempts },
         { k: 'last_called_at', label: 'Last call', render: (c) => h`${c.last_called_at ? relTime(c.last_called_at) : '—'}${c.last_note ? h`<div class="t-sub ellipsis" style="max-width:220px">${c.last_note}</div>` : ''}`, exportValue: (c) => fmtDateTime(c.last_called_at) },
-        { k: 'act', label: '', nosort: true, noexport: true, render: (c) => h`<div class="row" style="justify-content:flex-end;flex-wrap:nowrap">
+        { k: 'act', label: '', nosort: true, noexport: true, render: (c) => (otherOffice(c) ? '' : h`<div class="row" style="justify-content:flex-end;flex-wrap:nowrap">
           ${['interested', 'callback', 'no_answer', 'new'].includes(c.status) && !c.erased_at ? h`<button class="btn btn-primary btn-xs" type="button" data-hand="${c.id}">${icon('send', 'ic-sm')}Hand over</button>` : ''}
           ${!c.erased_at ? h`<button class="icon-btn" type="button" data-edit="${c.id}" aria-label="Edit">${icon('edit', 'ic-sm')}</button><button class="icon-btn" type="button" data-erase="${c.id}" aria-label="Erase personal data (GDPR)" title="Erase personal data (GDPR)">${icon('gdpr', 'ic-sm')}</button>` : ''}
-          <button class="icon-btn" type="button" data-remove="${c.id}" aria-label="Remove">${icon('trash', 'ic-sm')}</button></div>` },
+          <button class="icon-btn" type="button" data-remove="${c.id}" aria-label="Remove">${icon('trash', 'ic-sm')}</button></div>`) },
       ],
     };
     if (table) table.setRows(rows); else table = mountTable($('[data-t]', el), opts);
@@ -205,16 +211,20 @@ async function viewSalesEvent({ el, params, query, stale }) {
 async function viewSalesQueue({ el, query, stale }) {
   const events = (await apiGet('salesEvents')).rows;
   if (stale()) return;
-  const state = { event: query.get('event') || '', outcome: '', contact: null };
+  // skipped: the people skipped since the queue opened, all left out until everyone left has been skipped.
+  const state = { event: query.get('event') || '', outcome: '', contact: null, skipped: [] };
   setHTML(el, h`${pageHead({ title: 'Call queue', sub: 'Tells you who to ring next: call-backs that are due first, then new contacts, then people who did not answer. Every call and outcome is logged.' })}
   <div class="filters"><select class="select" data-event aria-label="Event"><option value="">All events</option>${events.map((e) => h`<option value="${e.id}" ${String(e.id) === state.event ? raw('selected') : ''}>${e.name}</option>`)}</select><span class="small muted" data-counts></span></div>
   <div data-body>${loadingBlock()}</div>`);
   const body = $('[data-body]', el);
   const outcomeIcons = { no_answer: 'phone', voicemail: 'message', callback: 'clock', interested: 'check-circle', not_interested: 'x-circle', wrong_number: 'alert', do_not_call: 'gdpr' };
-  const load = async (skip) => {
+  const load = async () => {
     setQuery({ event: state.event });
     setHTML(body, loadingBlock());
-    const d = await apiGet('salesQueue', { event_id: state.event, skip: skip || '' });
+    // The latest skip goes first (older servers read only that one); at most the last 100.
+    const d = await apiGet('salesQueue', { event_id: state.event, skip: state.skipped.slice(-100).reverse().join(',') });
+    if (stale()) { if (leaving()) release(d.contact); return; }
+    if (!d.contact && state.skipped.length) { state.skipped = []; toast('Everyone left has been skipped: back to the start of the queue.'); return load(); }
     const q = d.counts;
     $('[data-counts]', el).textContent = `${num(q.total)} to call · ${num(q.callbacks)} call-backs due · ${num(q.new)} new · ${num(q.retries)} to retry`;
     state.contact = d.contact;
@@ -241,7 +251,28 @@ async function viewSalesQueue({ el, query, stale }) {
       <div><div class="tl-head"><b>${label('call_outcome', x.outcome)}</b><span>${x.user_name || ''}</span><span>${relTime(x.created_at)}</span></div>${x.notes ? h`<div class="tl-body">${x.notes}</div>` : ''}</div></div>`)}</div>` : h`<p class="muted">First call to this person.</p>`}
       <p class="small muted mt">Consent: ${c.consent_source || 'recorded'}${c.consent_at ? `, ${fmtDate(c.consent_at)}` : ''}</p></div></section></div>`);
   };
-  on(el, 'change', '[data-event]', (e, s) => { state.event = s.value; load().catch(showError); });
+  // The person shown is held for this agent for 15 minutes: let them go as soon as the agent moves on, so other agents
+  // can ring them.
+  function release(c, keepalive) {
+    return c ? apiPost('salesRelease', { contact_id: c.id }, { quiet: true, keepalive }).catch(() => {}) : Promise.resolve();
+  }
+  // Not when the page now open is this queue again: it shows (and keeps) the same person.
+  const leaving = () => { const now = parseHash(); return !(now.path === 'sales/queue' && (now.query.get('event') || '') === state.event); };
+  const onLeave = () => {
+    if (!stale()) return;
+    window.removeEventListener('hashchange', onLeave);
+    window.removeEventListener('pagehide', onHide);
+    if (leaving()) release(state.contact);
+  };
+  const onHide = () => release(state.contact, true);
+  window.addEventListener('hashchange', onLeave);
+  window.addEventListener('pagehide', onHide);
+  on(el, 'change', '[data-event]', async (e, s) => {
+    const c = state.contact;
+    state.contact = null; state.event = s.value; state.skipped = [];
+    await release(c); // before the next person is fetched, or "All events" would bring the same person back
+    load().catch(showError);
+  });
   on(body, 'click', '[data-outcome]', (e, b) => {
     state.outcome = b.dataset.outcome;
     $$('[data-outcome]', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
@@ -253,7 +284,10 @@ async function viewSalesQueue({ el, query, stale }) {
     }
     $('[data-save]', body).disabled = false;
   });
-  on(body, 'click', '[data-skip]', () => load(state.contact && state.contact.id).catch(showError));
+  on(body, 'click', '[data-skip]', () => {
+    if (state.contact) state.skipped = state.skipped.filter((id) => id !== +state.contact.id).concat(+state.contact.id);
+    load().catch(showError);
+  });
   on(body, 'click', '[data-save]', async (e, btn) => {
     const c = state.contact;
     busy(btn, true, 'Saving…');
@@ -263,7 +297,9 @@ async function viewSalesQueue({ el, query, stale }) {
       toast(`Logged: ${label('call_outcome', state.outcome)}`);
       if (state.outcome === 'interested') {
         const ok = await confirmBox({ title: `Hand ${fullName(c)} over now?`, message: 'Pick the office, adviser and administrator. They arrive as a new lead with this call history.', confirmText: 'Hand over' });
-        if (ok) { handoverModal(c, () => load().catch(showError)); return; }
+        // Handed over or not, the call is logged: carry on with the next person.
+        const next = () => load().catch(showError);
+        if (ok) { handoverModal(c, next, next); return; }
       }
       load().catch(showError);
     } catch (err) { busy(btn, false); showError(err); }

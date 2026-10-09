@@ -144,7 +144,8 @@ async function viewTaskRoute({ params }) {
   try { const d = await apiGet('get', { entity: 'tasks', id: params.id }); openTask(d.record, null, () => router()); } catch (e) { showError(e); }
 }
 async function viewTasks({ el, query }) {
-  const state = { tab: query.get('tab') || 'list', due: query.get('due') || 'all', mine: query.get('mine') === '1', month: query.get('month') || today().slice(0, 7) };
+  const state = { tab: query.get('tab') || 'list', due: query.get('due') || 'all', mine: query.get('mine') === '1', month: query.get('month') || today().slice(0, 7),
+    assigned: query.get('mine') === '1' ? '' : query.get('assigned_to') || '' }; // assigned_to: one person's tasks (from Team & workload)
   setHTML(el, h`${pageHead({ title: 'Tasks & calendar', sub: 'Everything due, overdue or coming up in the next 60 days, including the tasks the CRM creates for you.',
     actions: h`<button class="btn btn-primary" type="button" data-new>${icon('plus')}New task</button>` })}
   <div class="tabs" role="tablist"><button role="tab" type="button" data-tab="list" aria-selected="${state.tab === 'list'}">Task list</button><button role="tab" type="button" data-tab="calendar" aria-selected="${state.tab === 'calendar'}">Calendar</button></div>
@@ -152,10 +153,11 @@ async function viewTasks({ el, query }) {
   const body = $('[data-body]', el);
   const reload = () => draw().catch(showError);
   const draw = async () => {
-    setQuery({ tab: state.tab === 'list' ? '' : state.tab, due: state.due === 'all' ? '' : state.due, mine: state.mine ? '1' : '', month: state.tab === 'calendar' ? state.month : '' });
+    if (state.tab !== 'list') state.assigned = '';
+    setQuery({ tab: state.tab === 'list' ? '' : state.tab, due: state.due === 'all' ? '' : state.due, mine: state.mine ? '1' : '', month: state.tab === 'calendar' ? state.month : '', assigned_to: state.assigned });
     if (state.tab === 'list') {
       const isDone = state.due === 'done';
-      const res = await apiGet('list', { entity: 'tasks', status: isDone ? 'done' : 'open', due: ['overdue', 'today', 'upcoming'].includes(state.due) ? state.due : '', mine: state.mine });
+      const res = await apiGet('list', { entity: 'tasks', status: isDone ? 'done' : 'open', due: ['overdue', 'today', 'upcoming'].includes(state.due) ? state.due : '', mine: state.mine, assigned_to: state.assigned });
       const t = today();
       let rows = res.rows;
       if (isDone) rows = rows.sort((a, b) => String(b.completed_at).localeCompare(String(a.completed_at))).slice(0, 200);
@@ -165,11 +167,12 @@ async function viewTasks({ el, query }) {
         ['Later', rows.filter((x) => x.due_date && daysBetween(t, x.due_date) > 60)], ['No date', rows.filter((x) => !x.due_date)],
       ].filter(([, list]) => list.length);
       setHTML(body, h`<div class="filters">${segmented('due', [['all', 'All open'], ['overdue', 'Overdue'], ['today', 'Today'], ['upcoming', 'Next 60 days'], ['done', 'Done']], state.due)}
-        <label class="check"><input type="checkbox" data-mine ${state.mine ? raw('checked') : ''}><span>Mine only</span></label></div>
+        <label class="check"><input type="checkbox" data-mine ${state.mine ? raw('checked') : ''}><span>Mine only</span></label>
+        ${state.assigned ? h`<span class="chip">${icon('user', 'ic-sm')}Assigned to ${userName(state.assigned) || 'one person'}<button class="link-btn" type="button" data-everyone>Show everyone's</button></span>` : ''}</div>
         ${groups.length ? groups.map(([g, list]) => h`<section class="card mb"><div class="card-head"><h2>${g} <span class="muted small">(${list.length})</span></h2></div><div class="card-body" data-group>${tasksHtml(list, { showLink: true })}</div></section>`)
           : h`<div class="card">${emptyState('check-circle', 'No tasks here', 'All clear.')}</div>`}`);
       $$('[data-group]', body).forEach((g) => wireTasks(g, () => rows, reload));
-      $('[data-mine]', body).addEventListener('change', (e) => { state.mine = e.target.checked; reload(); });
+      $('[data-mine]', body).addEventListener('change', (e) => { state.mine = e.target.checked; if (state.mine) state.assigned = ''; reload(); });
     } else {
       const [y, m] = state.month.split('-').map(Number);
       const first = new Date(y, m - 1, 1);
@@ -191,12 +194,14 @@ async function viewTasks({ el, query }) {
         <div class="cal">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => h`<div class="cal-dow">${d}</div>`)}
         ${days.map((d) => { const k = isoDay(d); const list = byDay[k] || []; return h`<div class="cal-day ${d.getMonth() !== m - 1 ? 'other' : ''} ${k === today() ? 'today' : ''}"><div class="cal-num">${d.getDate()}</div>
           ${list.slice(0, 4).map((it) => h`<a class="cal-ev k-${it.kind} ${it.overdue ? 'overdue' : ''}" href="${linkOf(it)}" title="${it.title}">${it.title}</a>`)}${list.length > 4 ? h`<div class="tiny muted">+${list.length - 4} more</div>` : ''}</div>`; })}</div>`);
-      on(body, 'click', '[data-month]', (e, b) => { state.month = b.dataset.month; reload(); });
       $('[data-mine]', body).addEventListener('change', (e) => { state.mine = e.target.checked; reload(); });
     }
   };
   on(el, 'click', '[data-tab]', (e, b) => { state.tab = b.dataset.tab; $$('[data-tab]', el).forEach((x) => x.setAttribute('aria-selected', String(x === b))); reload(); });
   on(body, 'click', '[data-seg] button', (e, b) => { state.due = b.dataset.val; reload(); });
+  // Once here, not in draw(): body stays the same element, so a listener added on every redraw would multiply.
+  on(body, 'click', '[data-month]', (e, b) => { state.month = b.dataset.month; reload(); });
+  on(body, 'click', '[data-everyone]', () => { state.assigned = ''; reload(); });
   on(el, 'click', '[data-new]', () => openTask(null, null, reload));
   await draw();
 }
@@ -259,12 +264,12 @@ async function viewTeam({ el, stale }) {
     return h`<div class="card person"><div class="row"><div class="avatar">${initials(u.full_name)}</div><div class="grow"><b>${u.full_name}</b><div class="small muted">${label('x', S.meta.roles[u.role] || u.role)}</div></div><span class="badge ${cls}">${txt}</span></div>
       <div class="load-meter"><div class="row-between small"><span class="muted">Workload</span><b>${u.load} pts</b></div><div class="progress mt-sm"><span class="${u.status}" style="width:${Math.min(100, (100 * u.load) / d.threshold)}%"></span></div></div>
       <div class="mini-stats">${isProtectionOnly() ? h`<div><b>${u.open_quotes}</b><span>Quotes</span></div>` : h`<div><b>${u.active_cases}</b><span>Cases</span></div>`}<div><b>${u.open_leads}</b><span>Leads</span></div><div><b>${u.open_tasks}</b><span>Tasks</span></div><div><b class="${u.overdue_tasks ? 'risk-high' : ''}">${u.overdue_tasks}</b><span>Overdue</span></div></div>
-      <div class="row mt"><a class="btn btn-ghost btn-xs" href="#/tasks?mine=0">Tasks</a><span class="small muted">${u.due_week} due this week${u.last_login_at ? ` · last in ${relTime(u.last_login_at)}` : ''}</span></div></div>`;
+      <div class="row mt"><a class="btn btn-ghost btn-xs" href="#/tasks?assigned_to=${u.id}">Tasks</a><span class="small muted">${u.due_week} due this week${u.last_login_at ? ` · last in ${relTime(u.last_login_at)}` : ''}</span></div></div>`;
   })}</div>${d.rows.length ? '' : h`<div class="card">${emptyState('team', 'No staff in this office yet', 'Staff appear here once their login is approved.')}</div>`}`);
 }
 
 /* ---------- Reports ---------- */
-async function viewReports({ el, query }) {
+async function viewReports({ el, query, stale }) {
   const reportTabs = isProtectionOnly() ? [['revenue', 'Commission by adviser'], ['sources', 'Lead sources']]
     : [['pipeline', 'Pipeline'], ['revenue', 'Revenue by adviser'], ['quiet', 'Gone quiet'], ['sources', 'Lead sources'], ['completions', 'Completions'], ['lost', 'Lost reasons']];
   const firstTab = reportTabs[0][0];
@@ -329,12 +334,18 @@ async function viewReports({ el, query }) {
         { k: 'month', label: 'Month', render: (r) => toDate(r.month + '-01').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) },
         { k: 'completions', label: 'Completions', right: true }, { k: 'lent', label: 'Lent', right: true, render: (r) => money(r.lent) }, { k: 'fees', label: 'Fees', right: true, render: (r) => money(r.fees) }] });
     } else {
-      setHTML(body, d.lost.length ? h`<div class="grid grid-2"><section class="card"><div class="card-head"><h2>Why cases were lost</h2></div><div class="card-body">${barsHtml(d.lost, { value: (r) => +r.n, labelOf: (r) => r.reason })}</div></section><div data-t></div></div>`
+      // A case is saved as lost with "<reason>: <details>": count it under the reason it was given from the list.
+      const listed = S.meta.enums.lost_reason || [];
+      const counts = new Map();
+      d.lost.forEach((r) => { const k = listed.find((x) => r.reason === x || String(r.reason).startsWith(x + ': ')) || r.reason; counts.set(k, (counts.get(k) || 0) + +r.n); });
+      const lost = [...counts].map(([reason, n]) => ({ reason, n })).sort((a, b) => b.n - a.n);
+      setHTML(body, lost.length ? h`<div class="grid grid-2"><section class="card"><div class="card-head"><h2>Why cases were lost</h2></div><div class="card-body">${barsHtml(lost, { value: (r) => r.n, labelOf: (r) => r.reason })}</div></section><div data-t></div></div>`
         : h`<div class="card">${emptyState('check-circle', 'No lost cases in this period', '')}</div>`);
-      if (d.lost.length) mountTable($('[data-t]', body), { rows: d.lost, noun: 'reason', exportName: 'MAP lost reasons', columns: [{ k: 'reason', label: 'Reason' }, { k: 'n', label: 'Cases', right: true, value: (r) => +r.n }] });
+      if (lost.length) mountTable($('[data-t]', body), { rows: lost, noun: 'reason', exportName: 'MAP lost reasons', columns: [{ k: 'reason', label: 'Reason' }, { k: 'n', label: 'Cases', right: true }] });
     }
   };
-  const load = async () => { setHTML(body, loadingBlock()); d = await apiGet('reports', { from: state.from, to: state.to }); draw(); };
+  // Only drawn while this page is still open: draw() writes the filters into the address bar.
+  const load = async () => { setHTML(body, loadingBlock()); const res = await apiGet('reports', { from: state.from, to: state.to }); if (stale()) return; d = res; draw(); };
   on(el, 'click', '[data-tab]', (e, b) => { state.tab = b.dataset.tab; $$('[data-tab]', el).forEach((x) => x.setAttribute('aria-selected', String(x === b))); draw(); });
   ['#rp-from', '#rp-to'].forEach((s) => $(s, el).addEventListener('change', () => { state.from = $('#rp-from', el).value; state.to = $('#rp-to', el).value; load().catch(showError); }));
   on(el, 'click', '[data-seg="range"] button', (e, b) => {
@@ -399,11 +410,19 @@ async function viewAudit({ el }) {
   <div class="filters"><div class="search-pill"><input type="search" data-q placeholder="Search the log" aria-label="Search the audit log"><span class="go">${icon('search', 'ic-sm')}</span></div>
     <select class="select" data-entity aria-label="Record type"><option value="">Everything</option>${[['leads', 'Leads'], ['clients', 'Clients'], ['cases', 'Cases'], ['policies', 'Policies'], ['tasks', 'Tasks'], ['documents', 'Documents'], ['users', 'Logins'], ['event_contacts', 'Event contacts'], ['events', 'Events']]
       .filter(([k]) => !(isProtectionOnly() && ['cases', 'documents'].includes(k))).map(([k, t]) => h`<option value="${k}">${t}</option>`)}</select>
-    <select class="select" data-user aria-label="Person"><option value="">Everyone</option>${S.meta.users.map((u) => h`<option value="${u.id}">${u.full_name}</option>`)}</select>
+    <select class="select" data-user aria-label="Person"></select>
     ${isAdmin() ? h`<label class="check"><input type="checkbox" data-all><span>All offices</span></label>` : ''}</div>
   <div class="card"><div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Who</th><th>What</th>${isAdmin() ? h`<th>Office</th>` : ''}</tr></thead><tbody data-rows></tbody></table></div>
     <div class="table-foot"><span data-count></span><button class="btn btn-ghost btn-sm" type="button" data-more>Load older entries</button></div></div>`);
   const tbody = $('[data-rows]', el);
+  // The people whose changes this log can show: this office's staff and logins, plus the system admins and General Sales,
+  // who work in every office. Everyone, for an admin looking at all offices.
+  const people = () => S.meta.users.filter((u) => state.all || !S.meta.office || +u.office_id === +S.meta.office.id || ['admin', 'sales'].includes(u.role));
+  const drawPeople = () => {
+    if (state.user_id && !people().some((u) => String(u.id) === state.user_id)) state.user_id = '';
+    setHTML($('[data-user]', el), h`<option value="">Everyone</option>${people().map((u) => h`<option value="${u.id}" ${String(u.id) === state.user_id ? raw('selected') : ''}>${u.full_name}</option>`)}`);
+  };
+  drawPeople();
   const fmtChange = (v) => (v === null || v === '' ? '(empty)' : String(v).length > 60 ? String(v).slice(0, 60) + '…' : String(v));
   const draw = () => {
     setHTML(tbody, state.rows.length ? state.rows.map((r) => h`<tr><td class="nowrap"><span title="${fmtDateTime(r.at)}">${fmtDateTime(r.at)}</span></td><td>${r.user_name || h`<span class="muted">Not signed in</span>`}<div class="t-sub">${r.ip || ''}</div></td>
@@ -424,7 +443,7 @@ async function viewAudit({ el }) {
   $('[data-q]', el).addEventListener('input', debounce((e) => { state.q = e.target.value.trim(); load().catch(showError); }, 300));
   $('[data-entity]', el).addEventListener('change', (e) => { state.entity = e.target.value; load().catch(showError); });
   $('[data-user]', el).addEventListener('change', (e) => { state.user_id = e.target.value; load().catch(showError); });
-  if ($('[data-all]', el)) $('[data-all]', el).addEventListener('change', (e) => { state.all = e.target.checked; load().catch(showError); });
+  if ($('[data-all]', el)) $('[data-all]', el).addEventListener('change', (e) => { state.all = e.target.checked; drawPeople(); load().catch(showError); });
   on(el, 'click', '[data-more]', () => load(true).catch(showError));
   await load();
 }
@@ -434,11 +453,17 @@ async function viewTrash({ el, stale }) {
   const d = await apiGet('trash');
   if (stale()) return;
   const names = { leads: 'Lead', clients: 'Client', cases: 'Case', policies: 'Policy', tasks: 'Task', documents: 'Document', introducers: 'Introducer', templates: 'Template' };
+  // Cases and policies come as "<client>: <type>" with the type's code (ftb, ci…): show its name instead.
+  const typeEnum = { cases: 'case_type', policies: 'policy_type' };
+  const nameOf = (r) => {
+    const n = r.name === null || r.name === undefined ? '' : String(r.name), i = n.lastIndexOf(': ');
+    return typeEnum[r.entity] && i >= 0 ? n.slice(0, i + 2) + label(typeEnum[r.entity], n.slice(i + 2)) : n;
+  };
   setHTML(el, h`${pageHead({ title: 'Trash', sub: 'Deleted items can be restored. Anything deleted along with a client comes back when you restore the client.' })}<div data-t></div>`);
   mountTable($('[data-t]', el), {
     rows: d.rows, noun: 'item', empty: emptyState('trash', 'The trash is empty', ''), columns: [
       { k: 'entity', label: 'Type', value: (r) => names[r.entity] || r.entity },
-      { k: 'name', label: 'Name', render: (r) => h`<span class="t-title">${r.name}</span>` },
+      { k: 'name', label: 'Name', value: nameOf, render: (r) => h`<span class="t-title">${nameOf(r)}</span>` },
       { k: 'deleted_at', label: 'Deleted', render: (r) => h`${fmtDateTime(r.deleted_at)}<div class="t-sub">${userName(r.deleted_by)}</div>` },
       { k: 'act', label: '', nosort: true, noexport: true, render: (r) => h`<div class="row" style="justify-content:flex-end"><button class="btn btn-secondary btn-xs" type="button" data-restore="${r.entity}:${r.id}">${icon('undo', 'ic-sm')}Restore</button>
         ${isManager() ? h`<button class="btn btn-danger btn-xs" type="button" data-purge="${r.entity}:${r.id}">Delete forever</button>` : ''}</div>` },
@@ -500,7 +525,11 @@ function importWizard({ title, fields, onImport, extra }) {
         $$('[data-col]', el).forEach((s) => { map[s.dataset.col] = s.value === '' ? undefined : +s.value; });
         const out = rows.slice(1).map((r) => {
           const o = {};
-          for (const fl of fields) if (map[fl.k] !== undefined) o[fl.k] = /dob|date/.test(fl.k) ? excelDate(r[map[fl.k]], fl.k === 'dob') : r[map[fl.k]];
+          for (const fl of fields) {
+            if (map[fl.k] === undefined) continue;
+            const v = r[map[fl.k]];
+            o[fl.k] = /dob|date/.test(fl.k) ? excelDate(v, fl.k === 'dob') : fl.k === 'phone' ? excelPhone(v) : v;
+          }
           return o;
         });
         busy(btn, true, 'Importing…');
@@ -545,7 +574,9 @@ async function viewData({ el, query }) {
     const entity = b.dataset.export;
     try {
       const res = await apiGet('list', { entity, status: 'all' });
-      const skip = new Set(['office_id', 'version', 'deleted_at', 'deleted_by', 'compliance_eval', 'risk', 'compliance', 'auto_key']);
+      const skip = new Set(['office_id', 'version', 'deleted_at', 'deleted_by', 'compliance_eval', 'risk', 'compliance', 'auto_key',
+        // Protection-only advisers: no mortgage figures (or links to mortgage cases) in their spreadsheets.
+        ...(isProtectionOnly() ? [...MORTGAGE_LEAD_FIELDS, 'case_id'] : [])]);
       const keys = Object.keys(res.rows[0] || { id: '' }).filter((k) => !skip.has(k));
       const userCols = new Set(['adviser_id', 'administrator_id', 'assigned_to', 'created_by', 'updated_by', 'completed_by']);
       downloadXlsx(`MAP ${entity}`, [keys, ...res.rows.map((r) => keys.map((k) => (userCols.has(k) ? userName(r[k]) : r[k] === null ? '' : r[k])))]);

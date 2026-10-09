@@ -5,22 +5,30 @@ const OFFICE_ROLES = ['admin', 'manager', 'adviser', 'administrator'];
 const isOffice = () => S.me && OFFICE_ROLES.includes(S.me.role);
 const isManager = () => S.me && ['admin', 'manager'].includes(S.me.role);
 const isAdmin = () => S.me && S.me.role === 'admin';
-const canSales = () => S.me && ['sales', 'manager', 'admin'].includes(S.me.role);
+/** General Sales: its own logins, and office managers who give mortgage advice (it hands over mortgage enquiries). */
+const canSales = () => S.me && (S.me.role === 'sales' || (['manager', 'admin'].includes(S.me.role) && !S.me.protection_only));
 /** Protection-only advisers see nothing to do with mortgages. */
 const isProtectionOnly = () => !!(S.me && S.me.protection_only);
 const PROTECTION_ENQUIRIES = ['protection', 'insurance', 'business_protection', 'other'];
-const MORTGAGE_LEAD_FIELDS = ['loan_amount', 'property_value', 'deposit'];
+const MORTGAGE_LEAD_FIELDS = ['loan_amount', 'property_value', 'deposit', 'credit_issues'];
+/** Reasons a protection-only adviser can give for a lost lead (the shared list is about lenders and house sales). */
+const PROTECTION_LOST_REASONS = ['Went with another adviser', 'Bought cover elsewhere', 'Too expensive', 'Declined by the insurer',
+  'No longer needs cover', 'No response from client', 'Other'];
+/** A lead's timescale; "Now / offer accepted" (an accepted offer on a home) reads "Now" for protection-only advisers. */
+function timescaleLabel(k) { return isProtectionOnly() && k === 'asap' ? 'Now' : label('timescale', k); }
 function leadFields() {
   if (!isProtectionOnly()) return FIELDS.leads;
   return FIELDS.leads.filter((f) => !MORTGAGE_LEAD_FIELDS.includes(f.k)).map((f) => (f.k === 'enquiry_type'
-    ? Object.assign({}, f, { opts: enumOptions('enquiry_type').filter(([k]) => PROTECTION_ENQUIRIES.includes(k)) }) : f));
+    ? Object.assign({}, f, { opts: enumOptions('enquiry_type').filter(([k]) => PROTECTION_ENQUIRIES.includes(k)) })
+    : f.k === 'timescale' ? Object.assign({}, f, { opts: enumOptions('timescale').map(([k]) => [k, timescaleLabel(k)]) }) : f));
 }
 const MORTGAGE_PLACEHOLDERS = ['lender', 'loan_amount', 'property_address', 'completion_date', 'fixed_rate_end_date'];
 /** Email template form; protection-only advisers are not shown the mortgage placeholders. */
 function templateFields() {
   const names = ['first_name', 'last_name', 'full_name', 'my_name', 'adviser_name', 'office_name', ...(isProtectionOnly() ? [] : MORTGAGE_PLACEHOLDERS), 'today'];
   const hint = 'Placeholders: ' + names.map((n) => `{{${n}}}`).join(' ');
-  return FIELDS.templates.map((f) => (f.k === 'body' ? Object.assign({}, f, { hint }) : f));
+  return FIELDS.templates.map((f) => (f.k === 'body' ? Object.assign({}, f, { hint })
+    : f.k === 'category' && isProtectionOnly() ? Object.assign({}, f, { placeholder: 'e.g. Leads, Protection, Insurance' }) : f));
 }
 
 /* ---------- Record forms (shared by lists, detail pages and quick add) ---------- */
@@ -79,7 +87,7 @@ const FIELDS = {
     { k: 'proc_fee', label: 'Proc fee (£)', type: 'money' }, { k: 'broker_fee', label: 'Broker fee (£)', type: 'money' },
     { type: 'section', label: 'Next step and people' },
     { k: 'next_action', label: 'Next action' }, { k: 'next_action_date', label: 'Next action date', type: 'date' },
-    { k: 'adviser_id', label: 'Adviser', type: 'user' }, { k: 'administrator_id', label: 'Administrator', type: 'user' },
+    { k: 'adviser_id', label: 'Adviser', type: 'user', mortgage: true }, { k: 'administrator_id', label: 'Administrator', type: 'user', mortgage: true },
     { k: 'introducer_id', label: 'Introducer', type: 'introducer' },
     { k: 'notes', label: 'Notes', type: 'textarea' },
   ],
@@ -156,7 +164,10 @@ async function newPolicy(clientId, onSaved, caseId) {
 function openTask(task, links, onSaved) {
   const isNew = !task || !task.id;
   const defaults = { assigned_to: S.me.id, due_date: today(), priority: 'normal', status: 'open' };
-  editRecord({ entity: 'tasks', record: isNew ? null : task, fields: FIELDS.tasks, title: isNew ? 'New task' : 'Task',
+  // A task on a mortgage case can't go to someone who gives protection advice only (they would never see it).
+  const onCase = isNew ? !!(links && links.case_id) : !!task.case_id;
+  const fields = onCase ? FIELDS.tasks.map((f) => (f.k === 'assigned_to' ? Object.assign({}, f, { mortgage: true }) : f)) : FIELDS.tasks;
+  editRecord({ entity: 'tasks', record: isNew ? null : task, fields, title: isNew ? 'New task' : 'Task',
     sub: !isNew && task.auto_key ? 'Created automatically by the CRM.' : '', defaults, fixed: isNew ? links : null, onSaved });
 }
 
@@ -589,7 +600,8 @@ async function emailComposer(target, onDone, preferName) {
       on(el, 'click', '[data-copy-all]', () => copyText(`Subject: ${$('#em-s', el).value}\n\n${$('#em-b', el).value}`));
       on(el, 'click', '[data-mailto]', (e, a) => { if (a.dataset.long) copyText($('#em-b', el).value); });
       on(el, 'click', '[data-sent]', async () => {
-        try { await apiPost('logEmail', Object.assign({ subject: $('#em-s', el).value }, target)); close(); toast('Logged on the timeline'); if (onDone) onDone(); } catch (e) { showError(e); }
+        // template_id: the server files an email from a mortgage template on the client's case (out of protection-only advisers' sight).
+        try { await apiPost('logEmail', Object.assign({ subject: $('#em-s', el).value, template_id: +sel.value }, target)); close(); toast('Logged on the timeline'); if (onDone) onDone(); } catch (e) { showError(e); }
       });
       load();
     },

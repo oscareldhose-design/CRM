@@ -172,27 +172,84 @@ function crm_find($entity, $id, $includeDeleted = false)
     return crm_one($sql, [(int) $id, $officeId]);
 }
 
+/** The template placeholders filled in from a mortgage case. */
+const CRM_ENTITIES_CASE_PLACEHOLDERS = ['lender', 'loan_amount', 'property_address', 'completion_date', 'fixed_rate_end_date'];
+
+/**
+ * SQL condition, true for a mortgage template's category ($a is the table name or alias): any category with "mortgage"
+ * in it (Mortgage, Remortgage, Mortgage offers…) other than "Mortgage protection" (a protection product), or starting with "case".
+ */
+function crm_entities_template_category_cond($a)
+{
+    return "(REPLACE(LOWER(COALESCE($a.category, '')), 'mortgage protection', '') LIKE '%mortgage%' OR COALESCE($a.category, '') LIKE 'case%')";
+}
+
+/**
+ * SQL condition, true for a template whose subject or text uses a mortgage case's details ({{lender}}, {{loan_amount}}…),
+ * unless it is filed under protection or insurance (for a protection-only adviser those details are left blank).
+ */
+function crm_entities_template_details_cond($a)
+{
+    $text = "REPLACE(COALESCE($a.subject, '') || ' ' || COALESCE($a.body, ''), ' ', '')";
+    $uses = [];
+    foreach (CRM_ENTITIES_CASE_PLACEHOLDERS as $ph) {
+        $uses[] = "$text LIKE '%{{" . $ph . "}}%'";
+    }
+    return "(COALESCE($a.category, '') NOT LIKE '%protection%' AND COALESCE($a.category, '') NOT LIKE '%insurance%' AND (" . implode(' OR ', $uses) . '))';
+}
+
 /**
  * For protection-only advisers: leaves mortgage email templates out of a query on templates ($a is the table name or
- * alias): any category with "mortgage" in it (Mortgage, Remortgage, Mortgage offers…) or starting with "case".
- * Returns '' for everyone else.
+ * alias): a mortgage category (see above) or one that fills in a mortgage case's details. Returns '' for everyone else.
  */
 function crm_templates_protection_and($a)
 {
     if (!crm_protection_only()) {
         return '';
     }
-    return " AND COALESCE($a.category, '') NOT LIKE '%mortgage%' AND COALESCE($a.category, '') NOT LIKE 'case%'";
+    return ' AND NOT ' . crm_entities_template_category_cond($a) . ' AND NOT ' . crm_entities_template_details_cond($a);
 }
 
-/** For values copied from another record: the staff member or linked record while it is still valid here, else null. */
-function crm_entity_still_valid($entity, $field, $value)
+/** Whether staff member $id gives protection advice only, so can't be given mortgage work (they would never see it). */
+function crm_entities_protection_staff($id)
+{
+    return $id && crm_val('SELECT advice_type FROM users WHERE id = ?', [(int) $id]) === 'protection';
+}
+
+/** Whether a lead, case or task (its fields) is mortgage work, which protection-only advisers never see. */
+function crm_entities_mortgage_work($entity, array $r)
+{
+    switch ($entity) {
+        case 'cases':
+            return true;
+        case 'leads':
+            return !empty($r['enquiry_type']) && !in_array($r['enquiry_type'], CRM_PROTECTION_ENQUIRIES, true);
+        case 'tasks':
+            if (!empty($r['case_id'])) {
+                return true;
+            }
+            return !empty($r['lead_id'])
+                && crm_entities_mortgage_work('leads', ['enquiry_type' => crm_val('SELECT enquiry_type FROM leads WHERE id = ?', [(int) $r['lead_id']])]);
+    }
+    return false;
+}
+
+/**
+ * For values copied from another record: the staff member or linked record while it is still valid here, else null.
+ * A staff member who gives protection advice only is not valid for mortgage work: a case, or the $record being made
+ * (e.g. ['case_id' => …] for a task) when it is a mortgage lead or a task on a case or a mortgage lead.
+ */
+function crm_entity_still_valid($entity, $field, $value, array $record = [])
 {
     if (!$value) {
         return null;
     }
+    $spec = crm_entity($entity)['fields'][$field];
+    if ($spec[0] === 'user' && crm_entities_mortgage_work($entity, $record) && crm_entities_protection_staff($value)) {
+        return null;
+    }
     try {
-        return crm_coerce($entity, $field, crm_entity($entity)['fields'][$field], $value);
+        return crm_coerce($entity, $field, $spec, $value);
     } catch (CrmError $e) {
         return null;
     }
@@ -377,8 +434,10 @@ function crm_prepare_row($entity, array $row, $before)
             if (!$before && empty($row['adviser_id'])) {
                 $cl = crm_one('SELECT adviser_id, administrator_id FROM clients WHERE id = ?', [$merged['client_id']]);
                 if ($cl) {
-                    $row['adviser_id'] = $cl['adviser_id'] ?: ($u['role'] === 'adviser' ? (int) $u['id'] : null);
-                    if (empty($row['administrator_id'])) {
+                    // The client's people, unless they give protection advice only (they never see mortgage cases).
+                    $row['adviser_id'] = (crm_entities_protection_staff($cl['adviser_id']) ? null : $cl['adviser_id'])
+                        ?: ($u['role'] === 'adviser' ? (int) $u['id'] : null);
+                    if (empty($row['administrator_id']) && !crm_entities_protection_staff($cl['administrator_id'])) {
                         $row['administrator_id'] = $cl['administrator_id'];
                     }
                 }
@@ -457,6 +516,39 @@ function crm_prepare_row($entity, array $row, $before)
                 $row['active'] = 1;
             }
             break;
+        case 'templates':
+            // A protection-only adviser can't save a template they would then no longer see.
+            if (crm_protection_only()) {
+                $probe = 'SELECT 1 FROM (SELECT ? AS category, ? AS subject, ? AS body) t WHERE ';
+                $vals = [
+                    isset($merged['category']) ? $merged['category'] : null,
+                    isset($merged['subject']) ? $merged['subject'] : null,
+                    isset($merged['body']) ? $merged['body'] : null,
+                ];
+                if (crm_val($probe . crm_entities_template_category_cond('t'), $vals)) {
+                    crm_fail(400, 'invalid', 'This category is kept for mortgage templates, which are not part of your login (protection only). Choose another category, e.g. Protection.', 'category');
+                }
+                if (crm_val($probe . crm_entities_template_details_cond('t'), $vals)) {
+                    crm_fail(400, 'invalid', 'Mortgage details such as {{lender}} or {{loan_amount}} are not part of your login (protection only). Take them out of the subject and email text.', 'body');
+                }
+            }
+            break;
+    }
+    // Mortgage work can't be given to someone who gives protection advice only: they would never see it. A person
+    // already on the record stays (so an unrelated edit still saves); a new one, or the record becoming mortgage work, is checked.
+    if (in_array($entity, ['leads', 'cases', 'tasks'], true)) {
+        $merged = $before ? array_merge($before, $row) : $row;
+        if (crm_entities_mortgage_work($entity, $merged)) {
+            $wasMortgage = $before && crm_entities_mortgage_work($entity, $before);
+            foreach ($entity === 'tasks' ? ['assigned_to'] : ['adviser_id', 'administrator_id'] as $f) {
+                $uid = empty($merged[$f]) ? 0 : (int) $merged[$f];
+                if ($uid && (!$wasMortgage || (int) $before[$f] !== $uid) && crm_entities_protection_staff($uid)) {
+                    $what = $entity === 'leads' ? 'this enquiry (' . crm_label('enquiry_type', $merged['enquiry_type']) . ')'
+                        : ($entity === 'cases' ? 'mortgage cases' : 'tasks on a mortgage case or mortgage lead');
+                    crm_fail(400, 'invalid', crm_user_name($uid) . ' gives protection advice only, so they can\'t take ' . $what . '. Choose someone else.', $f);
+                }
+            }
+        }
     }
     return $row;
 }
@@ -871,6 +963,9 @@ function crm_action_restore()
             if (empty($r[$col])) {
                 continue;
             }
+            if ($word === 'case' && $entity === 'policies' && crm_protection_only()) {
+                continue;   // a policy belongs to its client; a protection-only adviser can't see (or restore) the case it came from
+            }
             $p = crm_one('SELECT id, deleted_at FROM ' . $tables[$word] . ' WHERE id = ? AND office_id = ?', [$r[$col], crm_office_id()]);
             if (!$p) {
                 crm_fail(409, 'parent_gone', 'This can\'t be restored: the ' . $word . ' it belonged to has been permanently deleted.');
@@ -919,6 +1014,18 @@ function crm_purge_rows($entity, $id)
         // Calls, notes and tasks that moved to the client when the lead was converted stay with the client.
         crm_q('DELETE FROM activities WHERE lead_id = ? AND office_id = ? AND client_id IS NULL', [$id, $office]);
         crm_q('DELETE FROM tasks WHERE lead_id = ? AND office_id = ? AND client_id IS NULL', [$id, $office]);
+        // A mortgage lead's history stays mortgage work, out of protection-only advisers' sight: it joins the case opened
+        // when the lead was converted (else the client's latest case; a live one first), as it can no longer be told apart by its lead.
+        $lead = crm_one('SELECT enquiry_type, client_id FROM leads WHERE id = ? AND office_id = ?', [$id, $office]);
+        if ($lead && crm_entities_mortgage_work('leads', $lead)) {
+            $conv = (int) crm_val('SELECT case_id FROM activities WHERE lead_id = ? AND office_id = ? AND case_id IS NOT NULL ORDER BY id LIMIT 1', [$id, $office]);
+            $caseId = crm_val('SELECT id FROM cases WHERE office_id = ? AND (id = ? OR client_id = ?) ORDER BY deleted_at IS NULL DESC, id = ? DESC, created_at DESC, id DESC LIMIT 1',
+                [$office, $conv, $lead['client_id'], $conv]);
+            if ($caseId) {
+                crm_q('UPDATE activities SET case_id = ? WHERE lead_id = ? AND office_id = ? AND case_id IS NULL', [$caseId, $id, $office]);
+                crm_q('UPDATE tasks SET case_id = ? WHERE lead_id = ? AND office_id = ? AND case_id IS NULL', [$caseId, $id, $office]);
+            }
+        }
         crm_q('UPDATE activities SET lead_id = NULL WHERE lead_id = ? AND office_id = ?', [$id, $office]);
         crm_q('UPDATE tasks SET lead_id = NULL WHERE lead_id = ? AND office_id = ?', [$id, $office]);
     } elseif (isset($col[$entity])) {
@@ -1104,7 +1211,8 @@ function crm_action_delete_activity()
 {
     $id = crm_in_int('id');
     $u = crm_user();
-    $a = crm_one('SELECT * FROM activities WHERE id = ? AND office_id = ? AND deleted_at IS NULL', [$id, crm_office_id()]);
+    // Protection-only logins can't reach (or learn of) case and mortgage-lead entries.
+    $a = crm_one('SELECT * FROM activities WHERE id = ? AND office_id = ? AND deleted_at IS NULL' . crm_protection_and('activities', 'activities'), [$id, crm_office_id()]);
     if (!$a) {
         crm_fail(404, 'not_found', 'That entry could not be found.');
     }
@@ -1251,13 +1359,53 @@ function crm_action_render_template()
     crm_ok(['to' => $person && $person['email'] ? $person['email'] : '', 'subject' => $fill($t['subject']), 'body' => $fill($t['body'])]);
 }
 
-/** POST logEmail: { client_id?, lead_id?, case_id?, subject } — records that an email was sent from your normal mailbox. */
+/**
+ * Whether a logged email came from a mortgage template (one protection-only advisers can't see): the template sent, or
+ * when the screen doesn't say which, a template whose subject matches (its {{placeholders}} standing for anything).
+ */
+function crm_entities_mortgage_email($templateId, $subject)
+{
+    $where = ' FROM templates t WHERE (t.office_id = ? OR t.office_id IS NULL) AND (' . crm_entities_template_category_cond('t')
+        . ' OR ' . crm_entities_template_details_cond('t') . ')';
+    if ($templateId) {
+        return (bool) crm_val('SELECT 1' . $where . ' AND t.id = ?', [crm_office_id(), $templateId]);
+    }
+    $sent = preg_replace('/\s+/u', '', $subject);
+    if ($sent === '') {
+        return false;
+    }
+    foreach (crm_all('SELECT t.subject' . $where . ' AND t.deleted_at IS NULL', [crm_office_id()]) as $t) {
+        $parts = preg_split('/\{\{\s*[a-z_]+\s*\}\}/', preg_replace('/\s+/u', '', $t['subject']));
+        if (mb_strlen(implode('', $parts)) < 8) {
+            continue;   // a subject that is (nearly) all placeholders would match any email
+        }
+        $re = '/^' . implode('.*', array_map(function ($p) {
+            return preg_quote($p, '/');
+        }, $parts)) . '$/iu';
+        if (preg_match($re, $sent)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** POST logEmail: { client_id?, lead_id?, case_id?, policy_id?, template_id?, subject } — records that an email was sent from your normal mailbox. */
 function crm_action_log_email()
 {
     $subject = crm_in_str('subject', 200);
     $body = crm_body();
     $body['type'] = 'email';
     $body['summary'] = 'Email sent: ' . ($subject !== '' ? $subject : '(no subject)');
+    // A mortgage template sent from a client's (or policy's) page filled in the client's latest case: the email goes on
+    // that case, so it stays out of protection-only advisers' sight.
+    if (!crm_protection_only() && !crm_in_int('case_id') && !crm_in_int('lead_id') && crm_entities_mortgage_email(crm_in_int('template_id'), $subject)) {
+        $clientId = crm_in_int('client_id') ?: (int) crm_val('SELECT client_id FROM policies WHERE id = ? AND office_id = ?', [crm_in_int('policy_id'), crm_office_id()]);
+        $caseId = $clientId ? crm_val("SELECT id FROM cases WHERE client_id = ? AND office_id = ? AND deleted_at IS NULL ORDER BY status = 'active' DESC, created_at DESC LIMIT 1",
+            [$clientId, crm_office_id()]) : null;
+        if ($caseId) {
+            $body['case_id'] = (int) $caseId;
+        }
+    }
     $GLOBALS['crm_body_replacement'] = $body;
     crm_action_add_activity();
 }

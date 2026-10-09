@@ -198,6 +198,11 @@ function crm_require_access($access, array $user)
             ? 'The General Sales area cannot open client files.'
             : 'Your login does not have access to this.');
     }
+    // General Sales hands over mortgage enquiries and reports on completed mortgages, so a protection-only office
+    // login doesn't get it. (A General Sales login keeps its area: it is all that login is for.)
+    if ($access === 'sales' && $user['role'] !== 'sales' && crm_protection_only($user)) {
+        crm_fail(403, 'protection_only', 'General Sales is not part of your login (protection only).');
+    }
 }
 
 /** The office whose records this request works on. Admins can switch office; everyone else has their own. */
@@ -552,6 +557,18 @@ function crm_action_switch_office()
     crm_ok();
 }
 
+/** The lists of choices for a protection-only login: nothing to do with mortgages. Empty lists keep the screens working. */
+function crm_auth_protection_enums(array $enums)
+{
+    foreach (['case_type', 'stage', 'case_status', 'rate_type', 'document_status'] as $k) {
+        $enums[$k] = new stdClass();
+    }
+    $enums['document_names'] = [];
+    $enums['enquiry_type'] = array_intersect_key($enums['enquiry_type'], array_flip(CRM_PROTECTION_ENQUIRIES));
+    unset($enums['opportunity_type']['remortgage']);
+    return $enums;
+}
+
 /** GET meta: everything the app needs to draw its screens for this user. */
 function crm_action_meta()
 {
@@ -559,12 +576,18 @@ function crm_action_meta()
     $u = $a['user'];
     $isOffice = in_array($u['role'], CRM_OFFICE_ROLES, true);
     $officeId = $isOffice ? crm_office_id() : ($u['office_id'] ? (int) $u['office_id'] : null);
+    $prot = crm_protection_only($u);
+    // Names for the screens and pickers: the people in this office, plus the system admins and General Sales, whose
+    // names turn up in every office. Only a system admin (who works in every office) gets everyone.
+    $sql = "SELECT id, full_name, role, office_id, status, is_office_account, advice_type FROM users WHERE status IN ('active', 'disabled') AND role <> 'webadmin'";
+    $users = $u['role'] === 'admin' ? crm_all($sql . ' ORDER BY is_office_account, full_name')
+        : crm_all($sql . " AND (office_id = ? OR role IN ('admin', 'sales')) ORDER BY is_office_account, full_name", [(int) $officeId]);
     $out = [
         'user' => crm_user_public($u),
         'office' => $officeId ? crm_one('SELECT id, name, address, phone FROM offices WHERE id = ?', [$officeId]) : null,
         'offices' => crm_all('SELECT id, name FROM offices WHERE active = 1 ORDER BY name'),
-        'users' => crm_all("SELECT id, full_name, role, office_id, status, email, is_office_account, advice_type FROM users WHERE status IN ('active', 'disabled') AND role <> 'webadmin' ORDER BY is_office_account, full_name"),
-        'enums' => crm_enums(),
+        'users' => $users,
+        'enums' => $prot ? crm_auth_protection_enums(crm_enums()) : crm_enums(),
         'roles' => CRM_ROLES,
         'today' => crm_today(),
         'settings' => [
@@ -574,7 +597,9 @@ function crm_action_meta()
     ];
     if ($isOffice) {
         $out['introducers'] = crm_all('SELECT id, name, company FROM introducers WHERE office_id = ? AND deleted_at IS NULL AND active = 1 ORDER BY name', [$officeId]);
-        $out['compliance_items'] = crm_compliance_items();
+        if (!$prot) {
+            $out['compliance_items'] = crm_compliance_items();
+        }
     }
     crm_ok($out);
 }

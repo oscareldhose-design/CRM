@@ -40,7 +40,7 @@ const S = { status: null, me: null, meta: null, usersById: {}, officeName: '' };
 class ApiError extends Error {
   constructor(status, code, message, payload) { super(message); this.status = status; this.code = code; this.payload = payload || {}; }
 }
-async function api(action, { params, body, method, quiet } = {}) {
+async function api(action, { params, body, method, quiet, keepalive } = {}) {
   const url = new URL('api.php', location.href);
   url.searchParams.set('action', action);
   if (params) {
@@ -51,6 +51,7 @@ async function api(action, { params, body, method, quiet } = {}) {
   const m = method || (body !== undefined ? 'POST' : 'GET');
   const opts = { method: m, headers: { 'X-MAP-CRM': '1', Accept: 'application/json' }, credentials: 'same-origin', cache: 'no-store' };
   if (m === 'POST') { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body || {}); }
+  if (keepalive) opts.keepalive = true; // still sent when the tab is closing
   let res;
   try { res = await fetch(url, opts); } catch (e) {
     throw new ApiError(0, 'network', 'Could not reach the server. Check your connection and try again.');
@@ -238,8 +239,17 @@ function modal({ title, sub, body, foot, size, onMount, onClose, dismissable = t
   layer.addEventListener('mousedown', (e) => { if (e.target === layer && dismissable) close(); });
   $('#modals').appendChild(layer);
   if (onMount) onMount(layer, close);
+  // "Reload the latest version" (see showFormError) in a dialog that has no reload of its own: close it and redraw the
+  // page from the latest records, so it can be done again on them.
+  on(layer, 'click', '[data-reload-record]', (e) => {
+    if (e.defaultPrevented) return;
+    close();
+    if (typeof router === 'function') router();
+    toast('Loaded the latest version');
+  });
   const first = layer.querySelector('input:not([type=hidden]):not([disabled]), select, textarea, .modal-foot .btn-primary');
-  setTimeout(() => (first || layer.querySelector('[data-close]')).focus(), 30);
+  // Not when someone has already clicked into the dialog: their typing would land in another box.
+  setTimeout(() => { if (!layer.contains(document.activeElement)) (first || layer.querySelector('[data-close]')).focus(); }, 30);
   return api_;
 }
 document.addEventListener('keydown', (e) => {
@@ -280,7 +290,7 @@ function busy(btn, on_, text) {
 
 /* ---------- Forms ---------- */
 /*
- * Field spec: { k, label, type, opts, req, full, hint, placeholder, roles, section }
+ * Field spec: { k, label, type, opts, req, full, hint, placeholder, roles, section, mortgage }
  * types: text email tel money number int date datetime textarea select user introducer client check section password
  */
 function fieldOptions(f, value) {
@@ -291,8 +301,9 @@ function fieldOptions(f, value) {
   if (f.type === 'user') {
     const roles = f.roles || ['admin', 'manager', 'adviser', 'administrator'];
     const officeId = S.meta.office && S.meta.office.id;
+    // mortgage: a field on mortgage work (a case, a task on a case), which staff who give protection advice only never see.
     opts = S.meta.users.filter((u) => String(u.id) === cur || (u.status === 'active' && roles.includes(u.role)
-        && (!officeId || +u.office_id === +officeId) && (f.allowOffice || !+u.is_office_account)))
+        && (!officeId || +u.office_id === +officeId) && (f.allowOffice || !+u.is_office_account) && !(f.mortgage && u.advice_type === 'protection')))
       .map((u) => [u.id, u.full_name + (u.role === 'administrator' ? ' (admin)' : '') + (u.status === 'active' ? '' : ' (switched off)')]);
     if (cur && !opts.some(([k]) => String(k) === cur)) opts.push([cur, 'Former member of staff']);
   } else if (f.type === 'introducer') {
@@ -413,7 +424,8 @@ function editRecord({ entity, record, fields, title, sub, defaults, onSaved, ext
       };
       on(el, 'click', '[data-save]', save);
       form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
-      on(el, 'click', '[data-reload-record]', async () => {
+      on(el, 'click', '[data-reload-record]', async (e) => {
+        e.preventDefault(); // reopens this form itself (not the dialog's general reload)
         close();
         try {
           const fresh = await apiGet('get', { entity, id: record.id });
@@ -680,6 +692,16 @@ function excelDate(v, past) {
     return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   }
   return s;
+}
+/**
+ * A phone number from a spreadsheet. Excel keeps a number typed into a General cell as a number, so 07700 900302 comes
+ * in as 7700900302 and +44 7700 900302 as 447700900302: the lost 0 (or +) is put back.
+ */
+function excelPhone(v) {
+  const s = String(v ?? '').trim();
+  if (/^[1-9]\d{9}$/.test(s)) return '0' + s;
+  if (typeof v === 'number' && /^44\d{10}$/.test(s)) return '+' + s;
+  return typeof v === 'number' ? s : v;
 }
 /** Guesses which spreadsheet column holds which field, from the header names. */
 function guessColumns(header, fields) {

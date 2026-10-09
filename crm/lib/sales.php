@@ -600,25 +600,38 @@ function crm_action_sales_handover()
     if ($type !== '' && !isset(crm_enums()['enquiry_type'][$type])) {
         crm_fail(400, 'invalid', 'Choose what they are interested in.', 'enquiry_type');
     }
-    // A protection-only adviser never sees mortgage leads (or their tasks), so they can't be given one.
-    if ($type !== '' && !in_array($type, CRM_PROTECTION_ENQUIRIES, true)) {
-        foreach (['adviser_id' => $adviserId, 'administrator_id' => $adminId] as $field => $uid) {
-            if ($uid && crm_val('SELECT advice_type FROM users WHERE id = ?', [$uid]) === 'protection') {
+    // A protection-only adviser never sees mortgage leads (or their tasks), so they can't be given one. A hand-over to them
+    // must also be a protection enquiry: "Not sure yet" or "Other" would bring them the contact's mortgage interest and call notes.
+    $protTypes = array_values(array_diff(CRM_PROTECTION_ENQUIRIES, ['other']));
+    $toProtection = false;
+    foreach (['adviser_id' => $adviserId, 'administrator_id' => $adminId] as $field => $uid) {
+        if ($uid && crm_val('SELECT advice_type FROM users WHERE id = ?', [$uid]) === 'protection') {
+            $toProtection = true;
+            if ($type !== '' && !in_array($type, CRM_PROTECTION_ENQUIRIES, true)) {
                 crm_fail(400, 'invalid', crm_user_name($uid) . ' gives protection advice only, so they can\'t take this enquiry ('
                     . crm_label('enquiry_type', $type) . '). Choose someone else.', $field);
+            }
+            if (!in_array($type, $protTypes, true)) {
+                $labels = array_map(function ($t) {
+                    return crm_label('enquiry_type', $t);
+                }, $protTypes);
+                $last = array_pop($labels);
+                crm_fail(400, 'invalid', crm_user_name($uid) . ' gives protection advice only. Under "Interested in" choose '
+                    . implode(', ', $labels) . ' or ' . $last . ', or choose someone else.', $field);
             }
         }
     }
     $event = crm_one('SELECT * FROM events WHERE id = ?', [$c['event_id']]);
-    $leadId = crm_tx(function () use ($u, $id, $event, $officeId, $adviserId, $adminId, $type, $notes) {
+    $leadId = crm_tx(function () use ($u, $id, $event, $officeId, $adviserId, $adminId, $type, $notes, $toProtection) {
         // Checked again in the write transaction, so two agents handing the same person over at once make one lead, not two.
         $c = crm_sales_find_contact($id);
         crm_sales_check_handover($c);
         $GLOBALS['crm_office_id'] = $officeId;   // the lead belongs to the chosen office
         $lines = ['Handed over by ' . $u['full_name'] . ' (General Sales) from the event "' . $event['name'] . '"'
             . ($event['event_date'] ? ' on ' . date('j M Y', strtotime($event['event_date'])) : '') . '.'];
-        // The hand-over form fills the notes with "Interested in: …" already; don't repeat it.
-        if ($c['interest'] && strpos($notes, 'Interested in: ' . $c['interest']) === false) {
+        // The hand-over form fills the notes with "Interested in: …" already; don't repeat it. For protection-only staff only
+        // the agent's notes go: an interest the agent took out (e.g. "Remortgage") isn't put back.
+        if ($c['interest'] && !$toProtection && strpos($notes, 'Interested in: ' . $c['interest']) === false) {
             $lines[] = 'Interested in: ' . $c['interest'];
         }
         if ($notes !== '') {

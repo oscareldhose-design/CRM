@@ -22,17 +22,27 @@ function crm_views_local_midnight_utc($date)
     return gmdate('Y-m-d\TH:i:s\Z', strtotime($date . ' 00:00:00'));
 }
 
-/** Open opportunities as the Opportunities screen counts them (clients in the trash left out; no remortgages for protection-only advisers). */
+/** SQL leaving out an opportunity ($a is its table alias) about a case in the trash, as one about a client in the trash is. */
+function crm_views_opportunity_case_and($a)
+{
+    return " AND NOT EXISTS (SELECT 1 FROM cases tk WHERE tk.id = $a.case_id AND tk.office_id = $a.office_id AND tk.deleted_at IS NOT NULL)";
+}
+
+/** Open opportunities as the Opportunities screen counts them (clients and cases in the trash left out; no remortgages for protection-only advisers). */
 function crm_views_open_opportunities($officeId)
 {
     return (int) crm_val("SELECT COUNT(*) FROM opportunities op LEFT JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id
-        WHERE op.office_id = ? AND op.status = 'open' AND (c.id IS NULL OR c.deleted_at IS NULL)" . (crm_protection_only() ? " AND op.type <> 'remortgage'" : ''), [$officeId]);
+        WHERE op.office_id = ? AND op.status = 'open' AND (c.id IS NULL OR c.deleted_at IS NULL)" . crm_views_opportunity_case_and('op')
+        . (crm_protection_only() ? " AND op.type <> 'remortgage'" : ''), [$officeId]);
 }
 
-/** An opportunity's detail as a protection-only adviser sees it: the engine's wording mentions the client's mortgage. */
-function crm_views_opportunity_detail(array $op)
+/**
+ * An opportunity's detail as a protection-only adviser sees it: the engine's wording mentions the client's mortgage.
+ * $plain rewords it whoever asks, for text a protection-only adviser may read later (e.g. a task's notes).
+ */
+function crm_views_opportunity_detail(array $op, $plain = false)
 {
-    if (!crm_protection_only() || $op['detail'] === null || $op['detail'] === '') {
+    if ((!$plain && !crm_protection_only()) || $op['detail'] === null || $op['detail'] === '') {
         return $op['detail'];
     }
     $resolved = ' (resolved automatically)';
@@ -297,7 +307,8 @@ function crm_action_opportunities()
     $o = crm_office_id();
     $status = crm_in_str('status', 20, 'open');
     $sql = "SELECT op.*, c.first_name || ' ' || c.last_name AS client_name, c.adviser_id, c.phone, c.email FROM opportunities op
-        LEFT JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id WHERE op.office_id = ? AND (c.id IS NULL OR c.deleted_at IS NULL)";
+        LEFT JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id WHERE op.office_id = ? AND (c.id IS NULL OR c.deleted_at IS NULL)"
+        . crm_views_opportunity_case_and('op');
     $p = [$o];
     if ($status !== 'all') {
         $sql .= ' AND op.status = ?';
@@ -316,7 +327,8 @@ function crm_action_opportunities()
     }
     $counts = [];
     foreach (crm_all("SELECT op.type, COUNT(*) AS n FROM opportunities op LEFT JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id
-            WHERE op.office_id = ? AND op.status = 'open' AND (c.id IS NULL OR c.deleted_at IS NULL)" . (crm_protection_only() ? " AND op.type <> 'remortgage'" : '') . ' GROUP BY op.type', [$o]) as $c) {
+            WHERE op.office_id = ? AND op.status = 'open' AND (c.id IS NULL OR c.deleted_at IS NULL)" . crm_views_opportunity_case_and('op')
+            . (crm_protection_only() ? " AND op.type <> 'remortgage'" : '') . ' GROUP BY op.type', [$o]) as $c) {
         $counts[$c['type']] = (int) $c['n'];
     }
     crm_ok(['rows' => $rows, 'counts' => $counts]);
@@ -329,8 +341,10 @@ function crm_action_opportunity_act()
     $u = crm_user();
     $id = crm_in_int('id');
     $action = crm_in_str('action', 20);
-    // Protection-only advisers can't see or act on remortgage opportunities (as on the Opportunities screen).
-    $op = crm_one('SELECT * FROM opportunities WHERE id = ? AND office_id = ?' . (crm_protection_only() ? " AND type <> 'remortgage'" : ''), [$id, $o]);
+    // Protection-only advisers can't see or act on remortgage opportunities, nor anyone on one whose case is in the trash
+    // (as on the Opportunities screen).
+    $op = crm_one('SELECT * FROM opportunities WHERE id = ? AND office_id = ?' . crm_views_opportunity_case_and('opportunities')
+        . (crm_protection_only() ? " AND type <> 'remortgage'" : ''), [$id, $o]);
     if (!$op) {
         crm_fail(404, 'not_found', 'That opportunity could not be found.');
     }
@@ -339,12 +353,18 @@ function crm_action_opportunity_act()
         if ($action === 'task') {
             $due = crm_in_str('due_date', 10) ?: crm_today();
             $adviser = $op['client_id'] ? crm_val('SELECT adviser_id FROM clients WHERE id = ?', [$op['client_id']]) : null;
+            $caseId = crm_entity_still_valid('tasks', 'case_id', $op['case_id']);
+            // A task on a case is mortgage work: not for a client's adviser who gives protection advice only (they would never see it).
+            if ($caseId && $adviser && crm_val('SELECT advice_type FROM users WHERE id = ?', [(int) $adviser]) === 'protection') {
+                $adviser = null;
+            }
             $t = crm_save_record('tasks', 0, [
-                'title' => 'Follow up opportunity: ' . $op['title'], 'notes' => crm_views_opportunity_detail($op), 'due_date' => $due,
-                // The client's adviser may have left and the case may be in the trash: fall back rather than fail.
+                // A task with no case may be seen by protection-only advisers: its notes never mention the mortgage.
+                'title' => 'Follow up opportunity: ' . $op['title'], 'notes' => $caseId ? $op['detail'] : crm_views_opportunity_detail($op, true), 'due_date' => $due,
+                // The client's adviser may have left: fall back rather than fail.
                 'assigned_to' => crm_entity_still_valid('tasks', 'assigned_to', $adviser) ?: (int) $u['id'],
                 'client_id' => crm_entity_still_valid('tasks', 'client_id', $op['client_id']),
-                'case_id' => crm_entity_still_valid('tasks', 'case_id', $op['case_id']),
+                'case_id' => $caseId,
             ]);
             $taskId = (int) $t['id'];
             $action = 'actioned';
@@ -680,7 +700,8 @@ function crm_action_notifications()
             }
         }
         foreach (crm_all("SELECT op.id, op.title, op.created_at FROM opportunities op JOIN clients c ON c.id = op.client_id AND c.office_id = op.office_id AND c.deleted_at IS NULL
-                WHERE op.office_id = ? AND op.status = 'open' AND c.adviser_id = ? AND op.created_at >= ?" . (crm_protection_only() ? " AND op.type <> 'remortgage'" : '') . '
+                WHERE op.office_id = ? AND op.status = 'open' AND c.adviser_id = ? AND op.created_at >= ?" . crm_views_opportunity_case_and('op')
+                . (crm_protection_only() ? " AND op.type <> 'remortgage'" : '') . '
                 ORDER BY op.created_at DESC LIMIT 10', [$o, $me, crm_iso_days_ago(7)]) as $op) {
             $items[] = ['kind' => 'opportunity', 'text' => 'New opportunity: ' . $op['title'], 'link' => '#/opportunities', 'at' => $op['created_at']];
         }

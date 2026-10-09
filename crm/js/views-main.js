@@ -26,7 +26,7 @@ function wireSegments(el, onPick) {
   });
 }
 async function markLost(entity, record, onDone) {
-  const reasons = S.meta.enums.lost_reason;
+  const reasons = isProtectionOnly() ? PROTECTION_LOST_REASONS : S.meta.enums.lost_reason;
   modal({
     title: entity === 'cases' ? 'Mark case as lost' : 'Mark lead as lost', size: 'narrow',
     sub: `Lost work is kept in Tools → ${isProtectionOnly() ? 'Lost leads' : 'Lost cases'} and can be reopened at any time.`,
@@ -49,7 +49,9 @@ async function reopen(entity, id, onDone) {
   try { await apiPost('reopen', { entity, id }); toast('Reopened'); onDone(); } catch (e) { showError(e); }
 }
 async function trashRecord(entity, record, what, after) {
-  const ok = await confirmBox({ title: `Move ${what} to the trash?`, message: entity === 'clients' ? 'Their cases, policies, documents and tasks go to the trash too. You can restore everything from Tools → Trash.' : 'You can restore it from Tools → Trash.', confirmText: 'Move to trash', danger: true });
+  const ok = await confirmBox({ title: `Move ${what} to the trash?`, confirmText: 'Move to trash', danger: true,
+    message: entity !== 'clients' ? 'You can restore it from Tools → Trash.'
+      : `Their ${isProtectionOnly() ? 'policies' : 'cases, policies, documents'} and tasks go to the trash too. You can restore everything from Tools → Trash.` });
   if (!ok) return;
   try { await apiPost('delete', { entity, id: record.id }); toast('Moved to the trash'); after(); } catch (e) { showError(e); }
 }
@@ -171,7 +173,7 @@ async function viewLeads({ el, query }) {
       columns: [
         { k: 'name', label: 'Name', value: (r) => fullName(r), render: (r) => h`<div class="t-title">${fullName(r)}</div><div class="t-sub">${r.phone || ''}${r.phone && r.email ? ' · ' : ''}${r.email || ''}</div>` },
         { k: 'score', label: 'Rating', render: (r) => ratingBadge(r.rating, r.score), exportValue: (r) => `${r.rating} (${r.score})` },
-        { k: 'enquiry_type', label: 'Looking for', value: (r) => label('enquiry_type', r.enquiry_type), render: (r) => h`${label('enquiry_type', r.enquiry_type)}<div class="t-sub">${label('timescale', r.timescale)}</div>` },
+        { k: 'enquiry_type', label: 'Looking for', value: (r) => label('enquiry_type', r.enquiry_type), render: (r) => h`${label('enquiry_type', r.enquiry_type)}<div class="t-sub">${timescaleLabel(r.timescale)}</div>` },
         { k: 'source', label: 'Source', value: (r) => label('source', r.source) },
         ...(isProtectionOnly() ? [] : [{ k: 'loan_amount', label: 'Loan', right: true, render: (r) => money(r.loan_amount), value: (r) => +r.loan_amount || null }]),
         { k: 'adviser_id', label: 'Adviser', value: (r) => userName(r.adviser_id) },
@@ -214,9 +216,9 @@ async function viewLead({ el, params, stale }) {
   <div class="grid grid-main">
     <div class="stack">
       <section class="card"><div class="card-head"><h2>Enquiry</h2></div><div class="card-body">${kvHtml([
-        ['Phone', telLink(l.phone)], ['Email', mailLink(l.email)], ['Looking for', label('enquiry_type', l.enquiry_type)], ['Timescale', label('timescale', l.timescale)],
+        ['Phone', telLink(l.phone)], ['Email', mailLink(l.email)], ['Looking for', label('enquiry_type', l.enquiry_type)], ['Timescale', timescaleLabel(l.timescale)],
         ...(isProtectionOnly() ? [] : [['Loan amount', money(l.loan_amount)], ['Property value', money(l.property_value)], ['Deposit', money(l.deposit)], ['Loan to value', ltv(l.loan_amount, l.property_value)]]),
-        ['Employment', label('employment', l.employment)], ['Credit history', label('credit_issues', l.credit_issues)], ['Source', label('source', l.source)],
+        ['Employment', label('employment', l.employment)], ...(isProtectionOnly() ? [] : [['Credit history', label('credit_issues', l.credit_issues)]]), ['Source', label('source', l.source)],
         ['Introducer', l.introducer_id ? h`<a href="#/introducers/${l.introducer_id}">${(S.meta.introducers.find((i) => +i.id === +l.introducer_id) || {}).name || 'Introducer'}</a>` : ''],
         ['Adviser', userName(l.adviser_id)], ['Administrator', userName(l.administrator_id)], ['Added', fmtDateTime(l.created_at)], ['Lead score', `${l.score} / 100 (${l.rating})`],
       ])}${l.notes ? h`<div class="mt"><div class="label">Notes</div><div class="pre mt-sm">${l.notes}</div></div>` : ''}</div></section>
@@ -426,7 +428,7 @@ async function viewClient({ el, params, query, stale }) {
     if (a === 'delete') trashRecord('clients', c, name, () => { location.hash = '#/clients'; });
     if (a === 'erase') {
       const ok = await confirmBox({ title: 'Erase personal data?', danger: true, confirmText: 'Erase permanently', typed: 'ERASE',
-        message: `GDPR right to erasure: ${name}'s name, contact details, notes and call summaries are removed for good. Anonymous case figures are kept for reporting. This cannot be undone.` });
+        message: `GDPR right to erasure: ${name}'s name, contact details, notes and call summaries are removed for good.${isProtectionOnly() ? '' : ' Anonymous case figures are kept for reporting.'} This cannot be undone.` });
       if (!ok) return;
       try { await apiPost('eraseClient', { id: c.id, confirm: 'ERASE' }); toast('Personal data erased'); reload(); } catch (err) { showError(err); }
     }
@@ -647,7 +649,9 @@ async function viewProtection({ el, query, stale }) {
   const all = res.rows;
   const t = today();
   const inForce = all.filter((p) => p.status === 'on_risk');
-  const renewals = inForce.filter((p) => p.renewal_date && daysBetween(t, p.renewal_date) <= 30 && daysBetween(t, p.renewal_date) >= 0);
+  // Renewals due in the next 30 days: what the Renewals KPIs (here and on the dashboard) and the reminder count.
+  const isRenewal = (p) => p.status === 'on_risk' && p.renewal_date && daysBetween(t, p.renewal_date) <= 30 && daysBetween(t, p.renewal_date) >= 0;
+  const renewals = inForce.filter(isRenewal);
   const quotes = all.filter((p) => p.status === 'quote' || p.status === 'applied');
   setHTML(el, h`${pageHead({
     title: 'Protection & insurance', sub: 'Life, critical illness, income protection, home, landlord and PMI, with renewals tracked.',
@@ -659,7 +663,7 @@ async function viewProtection({ el, query, stale }) {
     ${kpi('Renewals · 30 days', num(renewals.length), 'follow-up tasks are created', '#/protection?status=renewals', renewals.length > 0)}
     ${kpi('Cover written', moneyShort(inForce.reduce((s, p) => s + (+p.sum_assured || 0), 0)), 'total sum assured in force', '#/protection?status=on_risk')}
   </div>
-  <div class="filters">${segmented('status', [['live', 'Live'], ['on_risk', 'In force'], ['quotes', 'Quotes'], ['renewals', 'Renewals due'], ['ended', 'Ended'], ['all', 'All']], state.status)}
+  <div class="filters">${segmented('status', [['live', 'Live'], ['on_risk', 'In force'], ['quotes', 'Quotes'], ['renewals', 'Renewals · 30 days'], ['ended', 'Ended'], ['all', 'All']], state.status)}
     <select class="select" data-type aria-label="Type of cover"><option value="">All types of cover</option>${enumOptions('policy_type').map(([k, v]) => h`<option value="${k}" ${k === state.type ? raw('selected') : ''}>${v}</option>`)}</select></div>
   <div data-table></div>`);
   let table;
@@ -667,7 +671,7 @@ async function viewProtection({ el, query, stale }) {
     setQuery({ status: state.status === 'live' ? '' : state.status, type: state.type });
     const f = {
       live: (p) => ['quote', 'applied', 'on_risk'].includes(p.status), on_risk: (p) => p.status === 'on_risk', quotes: (p) => ['quote', 'applied'].includes(p.status),
-      renewals: (p) => p.status === 'on_risk' && p.renewal_date && daysBetween(t, p.renewal_date) <= 60, ended: (p) => ['declined', 'ntu', 'lapsed', 'cancelled'].includes(p.status), all: () => true,
+      renewals: isRenewal, ended: (p) => ['declined', 'ntu', 'lapsed', 'cancelled'].includes(p.status), all: () => true,
     }[state.status] || (() => true);
     const rows = all.filter((p) => f(p) && (!state.type || p.policy_type === state.type));
     const opts = {
