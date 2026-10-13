@@ -80,6 +80,32 @@ Microsoft 365 treats these emails as fake and puts them in Junk or quarantine.
 Requests always appear in the admin panel under **CRM logins** (with a badge and a banner), even if an email
 goes astray. If Hostinger ever asks you to, set `CRM_MAIL_SET_SENDER` to `false` in `crm/config.php`.
 
+## Demo on Netlify (for showing the directors)
+
+The [`netlify-demo`](netlify-demo) folder is a complete, self-contained demo of the CRM and the admin panel with
+sample data, ready to drag onto Netlify. Netlify can't run PHP, so the demo runs the CRM's real PHP code **inside each
+visitor's browser** (PHP compiled to WebAssembly, in a service worker). That means:
+
+- Every visitor gets their own private copy of the sample data, kept in their browser. Nothing they do reaches anyone
+  else, and **Reset demo** (the purple pill at the bottom of the screen) puts the sample data back.
+- The **Demo logins** button in that pill lists the logins: the three office logins and `admin` use `Map@2025#`, the
+  sample staff (`sarah.ahmed`, `hannah.reid` (protection only), `priya.patel`, `dan.hughes` (General Sales)) use
+  `Welcome123`.
+- No emails are sent, and the website half of the admin panel is switched off, so nobody can change the live
+  themaap.co.uk from the demo. The CRM logins half (requests, logins, offices) works as normal.
+- Sample dates move forward to today whenever the demo is first opened, so "due today" and "this week" stay current.
+- The first visit downloads about 18 MB (the PHP engine); after that it opens in a second. It needs an up-to-date
+  Chrome, Edge, Safari or Firefox, and doesn't work in a private window.
+
+**Put it on Netlify:** sign in at [app.netlify.com](https://app.netlify.com), go to **Sites → Add new site → Deploy
+manually**, and drag the `netlify-demo` folder (unzipped) onto the page. Netlify gives you a link like
+`https://something.netlify.app`, which opens the demo. You can rename it under **Site configuration → Change site
+name**. To update the demo later, drag the new folder onto the site's **Deploys** page.
+
+**Rebuild it** after changing the CRM (commit first: the build uses the committed code):
+`cd netlify && npm install && npm run build`. It needs Node 20+, PHP with SQLite and git. The sample data is in
+`netlify/seed-demo.mjs`.
+
 ## Logins for every adviser
 
 - On the sign-in page, staff choose **Request access** and enter their name, their **@themaap.co.uk** email
@@ -171,6 +197,8 @@ crm/
   assets/               MAP logo
   data/                 created on first run: the database (never upload, replace or commit this)
 tests/*.test.mjs        end-to-end and regression tests
+netlify/                builds the Netlify demo (service worker, sample data, build script)
+netlify-demo/           the built Netlify demo, ready to drag onto Netlify
 ```
 
 ## Run it on a computer (for testing)

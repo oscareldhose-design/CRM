@@ -1,0 +1,14 @@
+{
+  "name": "map-crm-netlify-demo",
+  "private": true,
+  "description": "Builds ../netlify-demo: a static copy of the MAP CRM that runs its PHP in the browser (WebAssembly), for demos on Netlify.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@php-wasm/universal": "3.1.58",
+    "@php-wasm/web": "3.1.58",
+    "esbuild": "0.28.2"
+  }
+}

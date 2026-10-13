@@ -1,0 +1,15 @@
+/*
+  X-Robots-Tag: noindex, nofollow
+  X-Content-Type-Options: nosniff
+/crm/8_3_33/*
+  Cache-Control: public, max-age=31536000, immutable
+/crm/sw.js
+  Cache-Control: no-cache
+/crm/app.html
+  Cache-Control: no-cache
+/crm/demo/*
+  Cache-Control: no-cache
+/crm/js/*
+  Cache-Control: no-cache
+/crm/app.css
+  Cache-Control: no-cache

@@ -1,0 +1,4 @@
+# The CRM lives at /crm/, as it will on themaap.co.uk.
+/                          /crm/                 302
+# Opened before the demo has started in this browser: show the loader, which starts it and comes back here.
+/crm/website-admin.php     /crm/index.html       200

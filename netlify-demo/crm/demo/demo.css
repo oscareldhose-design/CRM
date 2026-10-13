@@ -1,0 +1,18 @@
+/* MAP CRM demo: the floating "Demo" pill with the demo logins and the reset link. */
+.demo-pill { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 150; display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 6px; border-radius: 999px; background: linear-gradient(135deg, #a308a3, #6e006e); color: #fff;
+  font: 600 13px/1.3 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 10px 28px rgba(80, 0, 90, .35); white-space: nowrap; }
+.demo-pill b { background: rgba(255, 255, 255, .24); padding: 3px 9px; border-radius: 999px; letter-spacing: .08em; font-size: 11px; }
+.demo-pill a, .demo-pill summary { color: #fff; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.demo-pill summary { list-style: none; }
+.demo-pill summary::-webkit-details-marker { display: none; }
+.demo-pill details { position: relative; }
+.demo-logins { position: absolute; bottom: calc(100% + 14px); left: 50%; transform: translateX(-50%); background: #fff; color: #1d1324; border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(40, 0, 50, .35); padding: 14px 16px; width: max-content; max-width: calc(100vw - 24px); white-space: normal; font-weight: 500; }
+.demo-logins h3 { margin: 0 0 4px; font: 800 15px/1.3 Montserrat, Inter, sans-serif; color: #6e006e; }
+.demo-logins p { margin: 0 0 10px; font-size: 12.5px; color: #5c4b66; max-width: 440px; }
+.demo-logins table { border-collapse: collapse; font-size: 13px; }
+.demo-logins th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8a7a93; padding: 0 10px 6px 0; }
+.demo-logins td { padding: 5px 12px 5px 0; border-top: 1px solid #efe6f2; }
+.demo-logins td:nth-child(2), .demo-logins td:nth-child(3) { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; color: #6e006e; }
+@media (max-width: 560px) { .demo-pill .demo-hint { display: none; } .demo-logins td:first-child { display: none; } .demo-logins th:first-child { display: none; } }
