@@ -223,6 +223,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
 		body.dark-mode select option { background: #120e1c; color: #f4f1f8; }
 		textarea { min-height: 110px; resize: vertical; line-height: 1.55; }
+		textarea.team-multiline { min-height: 4.5rem; }
 		input[type="file"] { padding: 8px 10px; background: var(--surface2); cursor: pointer; }
 		input[type="file"]::file-selector-button { border: 0; border-radius: 999px; padding: 7px 14px; margin-right: 12px; background: var(--grad); color: #fff; font: 700 12.5px var(--font-display); cursor: pointer; }
 		input:focus, select:focus, textarea:focus { outline: none; border-color: var(--p); box-shadow: 0 0 0 4px var(--focus); }
@@ -297,8 +298,8 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 		.adm-person-avatar { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; margin: 0 auto 8px; display: block; border: 3px solid var(--surface); box-shadow: 0 0 0 2px rgba(163, 8, 163, .35); background: var(--surface3); }
 		.adm-person-init { width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 8px; display: flex; align-items: center; justify-content: center; background: var(--grad); color: #fff; font-size: 22px; font-weight: 800; }
 		.adm-person-name { font-size: 12px; font-weight: 700; color: var(--text1); line-height: 1.3; word-break: break-word; }
-		.adm-person-sub, .adm-person-dept { font-size: 11px; color: var(--text3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-		.adm-person-dept { opacity: .8; }
+		.adm-person-sub { font-size: 11px; color: var(--text3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+		.adm-person-dept { font-size: 11px; color: var(--text3); margin-top: 2px; opacity: .8; overflow-wrap: anywhere; white-space: pre-wrap; max-width: 100%; }
 		.adm-fb-dot { position: absolute; top: 8px; right: 8px; width: 10px; height: 10px; border-radius: 50%; background: #22c55e; border: 2px solid var(--surface); box-shadow: 0 0 0 2px rgba(34, 197, 94, .25); }
 		.adm-section-divider { display: flex; align-items: center; gap: 12px; margin: 22px 0 14px; color: var(--p); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; }
 		body.dark-mode .adm-section-divider { color: #e590e7; }
@@ -664,7 +665,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 								<input id="advisorSpecialtyOther" placeholder="Enter specialty" />
 							</div>
 							<div class="field half"><label for="advisorPhone">Phone (for Call Now button)</label><input id="advisorPhone" type="tel" placeholder="+44 7xxx xxxxxx" oninput="this.value=this.value.replace(/[^0-9+\s\-()]/g,'')" /></div>
-							<div class="field half"><label for="advisorEmail">Email (for Message Now button)</label><input id="advisorEmail" type="email" placeholder="advisor@example.com" /></div>
+							<div class="field half"><label for="advisorWhatsApp">WhatsApp number (for WhatsApp Now button)</label><input id="advisorWhatsApp" type="tel" placeholder="+44 7xxx xxxxxx" oninput="this.value=this.value.replace(/[^0-9+\s\-()]/g,'')" /></div>
 							<div class="field">
 								<label for="advisorImage">Profile Photo (optional)</label>
 								<input id="advisorImage" type="file" accept="image/*" />
@@ -721,8 +722,8 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 								<label for="teamRoleOther">Specify Role</label>
 								<input id="teamRoleOther" placeholder="Enter role badge" />
 							</div>
-							<div class="field half"><label for="teamTitle">Job Title *</label><input id="teamTitle" placeholder="e.g. Mortgage Paraplanner" required /></div>
-							<div class="field half"><label for="teamDepartment">Department</label><input id="teamDepartment" placeholder="e.g. Mortgage Processing &amp; Documentation" /></div>
+							<div class="field half"><label for="teamTitle">Job Title *</label><textarea id="teamTitle" class="team-multiline" rows="2" placeholder="e.g. Mortgage Paraplanner" required></textarea></div>
+							<div class="field half"><label for="teamDepartment">Department</label><textarea id="teamDepartment" class="team-multiline" rows="2" placeholder="e.g. Mortgage Processing &amp; Documentation"></textarea></div>
 							<div class="field">
 								<label for="teamImage">Profile Photo</label>
 								<input id="teamImage" type="file" accept="image/*" />
@@ -1185,7 +1186,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			advisorLocation: document.getElementById('advisorLocation'),
 			advisorSpecialty: document.getElementById('advisorSpecialty'),
 			advisorSpecialtyOther: document.getElementById('advisorSpecialtyOther'),
-			advisorEmail: document.getElementById('advisorEmail'),
+			advisorWhatsApp: document.getElementById('advisorWhatsApp'),
 			advisorPhone: document.getElementById('advisorPhone'),
 			advisorImage: document.getElementById('advisorImage'),
 			advisorImagePreview: document.getElementById('advisorImagePreview'),
@@ -1749,7 +1750,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				document.getElementById('specialtyOtherField').style.display = 'block';
 			}
 			refs.advisorPhone.value = data.phone || '';
-			refs.advisorEmail.value = data.email || '';
+			refs.advisorWhatsApp.value = data.whatsapp || data.phone || '';
 			refs.advisorActive.value = data.active !== false ? 'true' : 'false';
 			if (data.imageBase64) {
 				refs.advisorImagePreview.src = data.imageBase64;
@@ -2000,7 +2001,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 			const location = refs.advisorLocation.value.trim();
 			const specialtyRaw = refs.advisorSpecialty.value;
 			const specialty = specialtyRaw === 'Other' ? refs.advisorSpecialtyOther.value.trim() : specialtyRaw;
-			const email = refs.advisorEmail.value.trim();
+			const whatsapp = refs.advisorWhatsApp.value.trim();
 			const phone = refs.advisorPhone.value.trim();
 
 			if (!name || !location) {
@@ -2015,8 +2016,8 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 				return;
 			}
 
-			if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-				showStatus(refs.advisorStatus, 'Please enter a valid email address.', 'error');
+			if (whatsapp && !/^[+0-9\s\-()]+$/.test(whatsapp)) {
+				showStatus(refs.advisorStatus, 'Please enter a valid WhatsApp phone number.', 'error');
 				setButtonBusy(refs.saveAdvisorBtn, false);
 				return;
 			}
@@ -2048,7 +2049,7 @@ $crm_admin_html = <<<'MAP_ADMIN_PANEL_HTML'
 					name,
 					location,
 					specialty,
-					email,
+					whatsapp,
 					phone,
 					active: refs.advisorActive.value === 'true',
 					updatedAt: serverTimestamp()
