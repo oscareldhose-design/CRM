@@ -98,9 +98,13 @@ visitor's browser** (PHP compiled to WebAssembly, in a service worker). That mea
   Chrome, Edge, Safari or Firefox, and doesn't work in a private window.
 
 **Put it on Netlify:** sign in at [app.netlify.com](https://app.netlify.com), go to **Sites → Add new site → Deploy
-manually**, and drag the `netlify-demo` folder (unzipped) onto the page. Netlify gives you a link like
-`https://something.netlify.app`, which opens the demo. You can rename it under **Site configuration → Change site
-name**. To update the demo later, drag the new folder onto the site's **Deploys** page.
+manually**, and drag the `netlify-demo` folder (unzipped) onto the page. Then **make it public**: new Netlify projects
+are private (only your Netlify team can open them), and a private site stops the demo from starting. Open the project,
+go to **Project configuration → General → Visitor access → Project visibility**, choose **Public** and save (or use
+the **Make public** button Netlify shows after the first deploy). Open the demo at the project's own address,
+`https://<name>.netlify.app` (not the small preview inside Netlify's dashboard). You can rename it under **Project
+configuration → Change project name**. To update the demo later, drag the new folder onto the project's **Deploys**
+page.
 
 **Rebuild it** after changing the CRM (commit first: the build uses the committed code):
 `cd netlify && npm install && npm run build`. It needs Node 20+, PHP with SQLite and git. The sample data is in
